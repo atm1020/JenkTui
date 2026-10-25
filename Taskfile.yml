@@ -1,0 +1,418 @@
+# https://taskfile.dev
+
+version: "3"
+
+vars:
+  VERSION:
+    sh: git describe --tags --always 2>/dev/null || echo "dev"
+  COMPOSE_FILE: dev/docker/docker-compose.yaml
+
+env:
+  CGO_ENABLED: 0
+  GOEXPERIMENT: greenteagc
+
+tasks:
+  lint:install:
+    desc: Install golangci-lint
+    cmds:
+      - go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+    env:
+      GOTOOLCHAIN: go1.26.0
+
+  lint:
+    desc: Run base linters
+    cmds:
+      - golangci-lint run --path-mode=abs --config=".golangci.yml" --timeout=5m
+    env:
+      GOEXPERIMENT: null
+
+  lint:fix:
+    desc: Run base linters and fix issues
+    cmds:
+      - golangci-lint run --path-mode=abs --config=".golangci.yml" --timeout=5m --fix
+    env:
+      GOEXPERIMENT: null
+
+  tools:install:
+    desc: Install local development tools
+    cmds:
+      - task: lint:install
+      - task: fmt:install
+      - task: benchstat:install
+
+  build:
+    desc: Build the application
+    vars:
+      COMMIT:
+        sh: git rev-parse --short HEAD 2>/dev/null || echo ""
+      DATE:
+        sh: date -u +%Y-%m-%dT%H:%M:%SZ
+      LDFLAGS: '-ldflags="-s -w -X github.com/atm1020/jenktui/src/version.Version={{.VERSION}} -X github.com/atm1020/jenktui/src/version.Commit={{.COMMIT}} -X github.com/atm1020/jenktui/src/version.Date={{.DATE}}"'
+    cmds:
+      - go build {{.LDFLAGS}} -o jenktui .
+    generates:
+      - jenktui
+
+  run:
+    desc: Run the application
+    cmds:
+      - go run . {{.CLI_ARGS}}
+
+  demo:
+    desc: Build JenkTui and render the README GIF demo
+    deps:
+      - build
+    preconditions:
+      - sh: command -v vhs >/dev/null 2>&1
+        msg: Install VHS first (https://github.com/charmbracelet/vhs)
+      - sh: command -v ffmpeg >/dev/null 2>&1
+        msg: Install FFmpeg first (https://ffmpeg.org)
+    cmds:
+      - mkdir -p dist
+      - defer: rm -f dist/jenktui-demo.mp4
+      - vhs docs/vhs/jenktui-demo.tape
+      - >-
+        ffmpeg -y -v error -i dist/jenktui-demo.mp4 -filter_complex
+        "fps=20,scale=1280:-2:flags=lanczos,split[s0][s1];
+        [s0]palettegen=max_colors=64:stats_mode=diff[p];
+        [s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
+        -loop 0 docs/assets/jenktui-demo.gif
+
+  test:
+    desc: Run tests
+    cmds:
+      - go test -race -failfast ./... {{.CLI_ARGS}}
+    env:
+      CGO_ENABLED: "1"
+
+  test:coverage:
+    desc: Run tests and enforce minimum coverage
+    cmds:
+      - |
+        COVERPROFILE="${COVERPROFILE:-coverage.out}"
+        MIN="${MIN_COVERAGE:-55}"
+
+        go test -race -covermode=atomic -coverprofile="$COVERPROFILE" -failfast ./... {{.CLI_ARGS}}
+
+        TOTAL="$(go tool cover -func="$COVERPROFILE" | awk '/^total:/ {gsub("%", "", $3); print $3}')"
+        if [ -z "$TOTAL" ]; then
+          echo "Could not read total coverage"
+          exit 1
+        fi
+
+        echo "Total coverage: ${TOTAL}% (min ${MIN}%)"
+        if ! awk -v actual="$TOTAL" -v min="$MIN" 'BEGIN { exit (actual + 0 >= min + 0 ? 0 : 1) }'; then
+          echo "Coverage gate failed: ${TOTAL}% is below ${MIN}%"
+          exit 1
+        fi
+    env:
+      CGO_ENABLED: "1"
+
+  bench:
+    desc: Run benchmarks
+    cmds:
+      - go test -bench=. -benchmem -count=3 ./... {{.CLI_ARGS}}
+
+  benchstat:install:
+    desc: Install the Go benchmark comparison tool
+    cmds:
+      - go install golang.org/x/perf/cmd/benchstat@latest
+
+  bench:job:
+    desc: Benchmark the deterministic animated job-page workload
+    cmds:
+      - task: _bench:page
+        vars: {PKG: ./src/ui/components/job, BENCH: BenchmarkJobPageAnimationFrame}
+
+  bench:build:
+    desc: Benchmark the deterministic animated build-page workload
+    cmds:
+      - task: _bench:page
+        vars: {PKG: ./src/ui/components/build, BENCH: BenchmarkBuildPageAnimationFrame}
+
+  _bench:page:
+    internal: true
+    env:
+      TZ: UTC
+      GOMAXPROCS: "2"
+    cmds:
+      - go test -run '^$' -bench '^{{.BENCH}}$' -benchmem -benchtime="${BENCHTIME:-1s}" -count="${BENCHCOUNT:-10}" {{.PKG}} {{.CLI_ARGS}}
+
+  profile:job:
+    desc: Capture offline job-page animation CPU, memory, goroutine, frequency, and terminal-output profiles
+    cmds:
+      - task: _profile:page
+        vars: {NAME: job, PKG: ./src/ui/components/job, TEST: TestJobAnimationProfile}
+
+  profile:build:
+    desc: Capture offline build-page animation CPU, memory, goroutine, frequency, and terminal-output profiles
+    cmds:
+      - task: _profile:page
+        vars: {NAME: build, PKG: ./src/ui/components/build, TEST: TestBuildAnimationProfile}
+
+  _profile:page:
+    internal: true
+    env:
+      TZ: UTC
+      GOMAXPROCS: "2"
+    cmds:
+      - |
+        DIR="${PROFILE_DIR:-dist/profiles/{{.NAME}}}"
+        mkdir -p "$DIR"
+        {
+          git rev-parse HEAD
+          git status --short --untracked-files=no
+          go version
+          go env GOOS GOARCH GOEXPERIMENT
+          uname -a
+        } > "$DIR/environment.txt"
+        go test -c -o "$DIR/{{.NAME}}.test" {{.PKG}}
+        JENKTUI_ANIMATION_PROFILE_DIR="$DIR" \
+          JENKTUI_ANIMATION_PROFILE_DURATION="${PROFILE_DURATION:-10s}" \
+          "$DIR/{{.NAME}}.test" -test.run '^{{.TEST}}$' -test.v -test.timeout 2m
+
+  perf:
+    desc: Agent-friendly perf CLI (A/B, capture, summary, compare); see `task perf -- --help`
+    cmds:
+      - go run ./dev/perf {{.CLI_ARGS}}
+
+  bench:loader:
+    desc: Run the log-loader benchmarks
+    cmds:
+      - go test -run '^$' -bench '^BenchmarkLoader' -benchmem -benchtime="${BENCHTIME:-1s}" -count="${BENCHCOUNT:-10}" ./src/ui/components/logviewer {{.CLI_ARGS}}
+
+  bench:loader:before:
+    desc: Record the baseline log-loader benchmark results
+    cmds:
+      - |
+        OUTPUT="${BENCH_BEFORE:-/tmp/jenktui-loader-before.txt}"
+        if ! go test -run '^$' -bench '^BenchmarkLoader' -benchmem -benchtime="${BENCHTIME:-1s}" -count="${BENCHCOUNT:-10}" ./src/ui/components/logviewer {{.CLI_ARGS}} > "$OUTPUT"; then
+          cat "$OUTPUT"
+          exit 1
+        fi
+        cat "$OUTPUT"
+        echo "Baseline saved to $OUTPUT"
+
+  bench:loader:after:
+    desc: Record and compare the updated log-loader benchmark results
+    cmds:
+      - |
+        BEFORE="${BENCH_BEFORE:-/tmp/jenktui-loader-before.txt}"
+        AFTER="${BENCH_AFTER:-/tmp/jenktui-loader-after.txt}"
+        if [ ! -f "$BEFORE" ]; then
+          echo "Baseline not found at $BEFORE; run 'task bench:loader:before' first"
+          exit 1
+        fi
+        if ! go test -run '^$' -bench '^BenchmarkLoader' -benchmem -benchtime="${BENCHTIME:-1s}" -count="${BENCHCOUNT:-10}" ./src/ui/components/logviewer {{.CLI_ARGS}} > "$AFTER"; then
+          cat "$AFTER"
+          exit 1
+        fi
+        cat "$AFTER"
+        benchstat "$BEFORE" "$AFTER"
+
+  bench:loader:compare:
+    desc: Compare previously recorded log-loader benchmark results
+    cmds:
+      - |
+        BEFORE="${BENCH_BEFORE:-/tmp/jenktui-loader-before.txt}"
+        AFTER="${BENCH_AFTER:-/tmp/jenktui-loader-after.txt}"
+        if [ ! -f "$BEFORE" ] || [ ! -f "$AFTER" ]; then
+          echo "Missing benchmark files; run bench:loader:before and bench:loader:after first"
+          exit 1
+        fi
+        benchstat "$BEFORE" "$AFTER"
+
+  fmt:
+    desc: Run golangci-lint formatters
+    cmds:
+      - golangci-lint fmt --config=".golangci.yml"
+
+  fmt:check:
+    desc: Check formatting without modifying files
+    cmds:
+      - golangci-lint fmt --diff --config=".golangci.yml"
+
+  fmt:install:
+    desc: Install gofumpt
+    cmds:
+      - go install mvdan.cc/gofumpt@latest
+
+  debug:
+    desc: Run under headless Delve on 127.0.0.1:2345 (multi-client)
+    cmds:
+      - dlv debug . --headless --listen=127.0.0.1:2345 --api-version=2 --accept-multiclient {{.CLI_ARGS}}
+    interactive: true
+
+  log:
+    desc: Tail both application and gojenkins logs
+    cmds:
+      - tail -f "${XDG_DATA_HOME:-$HOME/.local/share}/JenkTui/logs/jenktui.log" "${XDG_DATA_HOME:-$HOME/.local/share}/JenkTui/logs/jenkins.log"
+
+  log:jenktui:
+    desc: Tail the JenkTui application log
+    cmds:
+      - tail -f "${XDG_DATA_HOME:-$HOME/.local/share}/JenkTui/logs/jenktui.log"
+
+  log:gojenkins:
+    desc: Tail the gojenkins client log
+    cmds:
+      - tail -f "${XDG_DATA_HOME:-$HOME/.local/share}/JenkTui/logs/jenkins.log"
+
+  run:dev:
+    desc: Run with profiling enabled
+    cmds:
+      - DEVELOPMENT=1 go run . {{.CLI_ARGS}}
+    interactive: true
+
+  dev:
+    desc: Alias for run:dev
+    cmds:
+      - task: run:dev
+
+  profile:cpu:
+    desc: 10s CPU profile
+    cmds:
+      - go tool pprof -http :6061 'http://localhost:6060/debug/pprof/profile?seconds=10'
+
+  profile:heap:
+    desc: Heap profile
+    cmds:
+      - go tool pprof -http :6061 'http://localhost:6060/debug/pprof/heap'
+
+  profile:allocs:
+    desc: Allocations profile
+    cmds:
+      - go tool pprof -http :6061 'http://localhost:6060/debug/pprof/allocs'
+
+  install:
+    desc: Install the application
+    vars:
+      COMMIT:
+        sh: git rev-parse --short HEAD 2>/dev/null || echo ""
+      DATE:
+        sh: date -u +%Y-%m-%dT%H:%M:%SZ
+      LDFLAGS: '-ldflags="-s -w -X github.com/atm1020/jenktui/src/version.Version={{.VERSION}} -X github.com/atm1020/jenktui/src/version.Commit={{.COMMIT}} -X github.com/atm1020/jenktui/src/version.Date={{.DATE}}"'
+    cmds:
+      - go install {{.LDFLAGS}} -v .
+
+  modernize:
+    desc: Run modernize
+    cmds:
+      - go run golang.org/x/tools/go/analysis/passes/modernize/cmd/modernize@latest -fix -test ./...
+
+  check:
+    desc: Run all checks (format, lint, test)
+    cmds:
+      - task: fmt:check
+      - task: lint
+      - task: test
+
+  seed:
+    desc: Seed local Jenkins with all test data (users + jobs)
+    cmds:
+      - go run ./dev/seed {{.CLI_ARGS}}
+
+  seed:users:
+    desc: Seed local Jenkins with test users only
+    cmds:
+      - go run ./dev/seed {{.CLI_ARGS}} users
+
+  seed:jobs:
+    desc: Seed local Jenkins with folders and jobs only
+    cmds:
+      - go run ./dev/seed {{.CLI_ARGS}} jobs
+
+  seed:2479:
+    desc: Seed Jenkins 2.479 instance (port 8081) with all test data
+    cmds:
+      - go run ./dev/seed -url http://localhost:8081 {{.CLI_ARGS}}
+
+  config:
+    desc: Alias for config:folder
+    cmds:
+      - task: config:folder
+
+  config:folder:
+    desc: Open key config in $EDITOR
+    cmds:
+      - ${EDITOR:-nvim} "${XDG_CONFIG_HOME:-$HOME/.config}/JenkTui/"
+
+  db:
+    desc: Start a browser admin UI for the local SQLite store
+    cmds:
+      - |
+        DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/JenkTui"
+        DB="$DATA_DIR/runs.db"
+        if [ ! -f "$DB" ]; then
+          echo "No store found at $DB (run jenktui once to create it)"
+          exit 1
+        fi
+        docker rm -f jenktui-db >/dev/null 2>&1 || true
+        docker run -d --name jenktui-db \
+          -p 127.0.0.1:8090:8080 \
+          -v "$DATA_DIR:/data:ro" \
+          -e SQLITE_DATABASE=runs.db \
+          -e SQLITE_WEB_READONLY=true \
+          coleifer/sqlite-web
+        echo "SQLite admin: http://localhost:8090"
+
+  db:stop:
+    desc: Stop the SQLite admin UI
+    cmds:
+      - docker rm -f jenktui-db
+
+  deps:update:
+    desc: Update dependencies
+    cmds:
+      - go get -u ./...
+
+  deps:tidy:
+    desc: Tidy go.mod and go.sum
+    cmds:
+      - go mod tidy
+
+  deps:
+    desc: Update and tidy dependencies
+    cmds:
+      - task: deps:update
+      - task: deps:tidy
+
+  jenkins:
+    desc: Start default local Jenkins stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d
+
+  jenkins:lts:
+    desc: Start local Jenkins LTS service
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d jenkins-lts
+
+  jenkins:2479:
+    desc: Start local Jenkins 2.479 service
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d jenkins-2479
+
+  jenkins:stop:
+    desc: Stop local Jenkins stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} down
+
+  jenkins:reset:
+    desc: Reset local Jenkins volumes and restart
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} down -v
+      - docker compose -f {{.COMPOSE_FILE}} up -d
+
+  jenkins:lts:reset:
+    desc: Reset local Jenkins volumes and restart LTS service
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} rm -sf jenkins-lts
+      - docker volume rm -f jenkins_lts_home
+      - docker compose -f {{.COMPOSE_FILE}} up -d jenkins-lts
+
+  jenkins:2479:reset:
+    desc: Reset local Jenkins volumes and restart 2.479 service
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} rm -sf jenkins-2479
+      - docker volume rm -f jenkins_2479_home
+      - docker compose -f {{.COMPOSE_FILE}} up -d jenkins-2479

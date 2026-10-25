@@ -1,0 +1,39 @@
+version: "3.8"
+services:
+  jenkins-lts:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jenkins-lts
+    ports:
+      - "127.0.0.1:8080:8080"      # Web UI (local machine only)
+    volumes:
+      - jenkins_lts_home:/var/jenkins_home
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+      - JENKINS_ADMIN_ID=${JENKINS_ADMIN_ID:-admin}
+      - JENKINS_ADMIN_PASSWORD=${JENKINS_ADMIN_PASSWORD:-admin}
+      - JENKINS_USERS=${JENKINS_USERS:-}
+    restart: unless-stopped
+
+  jenkins-2479:
+    build:
+      context: .
+      dockerfile: Dockerfile.2479
+    container_name: jenkins-2479
+    ports:
+      - "127.0.0.1:8081:8080"      # Web UI (2.479.3, local machine only)
+    volumes:
+      - jenkins_2479_home:/var/jenkins_home
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+      - JENKINS_ADMIN_ID=${JENKINS_ADMIN_ID:-admin}
+      - JENKINS_ADMIN_PASSWORD=${JENKINS_ADMIN_PASSWORD:-admin}
+      - JENKINS_USERS=${JENKINS_USERS:-}
+    restart: unless-stopped
+
+volumes:
+  jenkins_lts_home:
+    name: jenkins_lts_home
+  jenkins_2479_home:
+    name: jenkins_2479_home

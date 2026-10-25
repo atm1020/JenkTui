@@ -1,0 +1,25 @@
+package util
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"strings"
+)
+
+const defaultEditor = "nvim" // TODO from config
+
+// Cmd returns a *exec.Cmd editing the given path with $EDITOR or nano if no
+// $EDITOR is set.
+func EditorCmd(path string) *exec.Cmd {
+	editor, args := getEditor()
+	return exec.CommandContext(context.Background(), editor, append(args, path)...)
+}
+
+func getEditor() (string, []string) {
+	editor := strings.Fields(os.Getenv("EDITOR"))
+	if len(editor) > 0 {
+		return editor[0], editor[1:]
+	}
+	return defaultEditor, nil
+}

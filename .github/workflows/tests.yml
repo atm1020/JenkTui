@@ -1,0 +1,74 @@
+name: tests
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to test
+        required: false
+        type: string
+      min_coverage:
+        description: Minimum required total test coverage percentage
+        required: false
+        type: number
+        default: 55
+    outputs:
+      total_coverage:
+        description: Total test coverage percentage
+        value: ${{ jobs.tests.outputs.total_coverage }}
+      min_coverage:
+        description: Minimum required test coverage percentage
+        value: ${{ jobs.tests.outputs.min_coverage }}
+  workflow_dispatch:
+    inputs:
+      min_coverage:
+        description: Minimum required total test coverage percentage
+        required: false
+        type: number
+        default: 55
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    outputs:
+      total_coverage: ${{ steps.coverage.outputs.total_coverage }}
+      min_coverage: ${{ steps.coverage.outputs.min_coverage }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Install Task
+        run: go install github.com/go-task/task/v3/cmd/task@v3.45.4
+
+      - name: Test and check coverage
+        env:
+          MIN_COVERAGE: ${{ inputs.min_coverage || github.event.inputs.min_coverage }}
+          COVERPROFILE: coverage.out
+        run: |
+          "$(go env GOPATH)/bin/task" test:coverage
+
+      - name: Coverage summary
+        id: coverage
+        run: |
+          TOTAL_COVERAGE="$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%", "", $3); print $3}')"
+          MIN_COVERAGE="${{ inputs.min_coverage || github.event.inputs.min_coverage }}"
+          echo "total_coverage=${TOTAL_COVERAGE}" >> "$GITHUB_OUTPUT"
+          echo "min_coverage=${MIN_COVERAGE}" >> "$GITHUB_OUTPUT"
+          echo "Coverage: ${TOTAL_COVERAGE}% (min ${{ inputs.min_coverage || github.event.inputs.min_coverage }}%)" >> "$GITHUB_STEP_SUMMARY"

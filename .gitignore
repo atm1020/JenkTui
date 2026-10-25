@@ -1,0 +1,45 @@
+# Build outputs
+/jenktui
+/see
+/seed
+dist/
+bin/
+
+# Coverage and profiling output
+/coverage.out
+*.coverprofile
+*.prof
+
+# Local runtime data
+*.db
+*.db-*
+*.log
+
+# Local configuration and secrets
+.env
+.env.*
+.direnv/
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Private workspace material (never publish)
+/.agents/
+/.scratch/
+/docs/agents/
+/AGENTS.md
+/CLAUDE.md
+/CODING_STANDARDS.md
+
+# Local Jenkins credentials
+/server.json
+/config.json
+
+# Local agent/tooling checkouts
+.claude/
+.crush/
+.ghdash/
+.opencode/
+.superpowers/

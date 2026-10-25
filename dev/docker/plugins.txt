@@ -1,0 +1,12 @@
+# Nested seed jobs require folders; Pipeline fixtures need Declarative, sh, etc.
+cloudbees-folder
+workflow-aggregator
+# Resolve SCM API directly: the minimal dependency resolver can otherwise select
+# a version older than the one required by workflow-api.
+scm-api
+# Provides the /wfapi endpoints required by JenkTui.
+pipeline-rest-api
+# Colorizes ANSI SGR in /console; consoleText keeps the raw CSI codes for the TUI.
+ansicolor
+# Active Choices: dynamic/cascading parameters used by the Dynamic/* seed jobs.
+uno-choice

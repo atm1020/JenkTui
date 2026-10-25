@@ -1,0 +1,109 @@
+name: release
+
+on:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: Release tag to build and upload artifacts for
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Release tag to build and upload artifacts for
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.tag_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+    with:
+      ref: ${{ inputs.tag_name }}
+
+  tests:
+    uses: ./.github/workflows/tests.yml
+    with:
+      ref: ${{ inputs.tag_name }}
+
+  build-artifacts:
+    name: build artifacts (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: [lint, tests]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.tag_name }}
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        id: build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ inputs.tag_name }}
+        run: |
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
+
+          COMMIT="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          PACKAGE="jenktui-${VERSION}-${GOOS}-${GOARCH}"
+          mkdir -p "dist/$PACKAGE"
+          BINARY="jenktui${EXT}"
+          go build \
+            -trimpath \
+            -ldflags="-s -w -X github.com/atm1020/jenktui/src/version.Version=${VERSION} -X github.com/atm1020/jenktui/src/version.Commit=${COMMIT} -X github.com/atm1020/jenktui/src/version.Date=${DATE}" \
+            -o "dist/$PACKAGE/$BINARY" \
+            .
+          cp LICENSE NOTICE "dist/$PACKAGE/"
+
+          if [ "$GOOS" = "windows" ]; then
+            (cd dist && zip -qr "$PACKAGE.zip" "$PACKAGE")
+            OUTPUT="dist/$PACKAGE.zip"
+          else
+            tar -C dist -czf "dist/$PACKAGE.tar.gz" "$PACKAGE"
+            OUTPUT="dist/$PACKAGE.tar.gz"
+          fi
+          rm -rf "dist/$PACKAGE"
+          echo "output=$OUTPUT" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SHA-256 checksum
+        env:
+          OUTPUT: ${{ steps.build.outputs.output }}
+        run: |
+          (cd "$(dirname "$OUTPUT")" && sha256sum "$(basename "$OUTPUT")" > "$(basename "$OUTPUT").sha256")
+
+      - name: Upload release artifacts
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          tag_name: ${{ inputs.tag_name }}
+          files: |
+            dist/*
