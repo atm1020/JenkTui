@@ -26,12 +26,9 @@ bin/
 .vscode/
 
 # Private workspace material (never publish)
-/.agents/
 /.scratch/
 /docs/agents/
-/AGENTS.md
 /CLAUDE.md
-/CODING_STANDARDS.md
 
 # Local Jenkins credentials
 /server.json
