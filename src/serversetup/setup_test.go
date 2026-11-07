@@ -3,7 +3,6 @@ package serversetup
 import (
 	"bytes"
 	"context"
-	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"charm.land/log/v2"
+	"github.com/atm1020/jenktui/dev/localca"
 	"github.com/atm1020/jenktui/src/config"
 	appcontext "github.com/atm1020/jenktui/src/context"
 )
@@ -132,21 +132,77 @@ func TestVerifyRejectsFailuresWithoutEchoingSecrets(t *testing.T) {
 	}
 }
 
+// privateCAServer mirrors a company Jenkins: TLS behind a CA the system does
+// not know, with that CA written where ca_cert_path can point.
+func privateCAServer(t *testing.T, token string, hosts ...string) (*httptest.Server, string) {
+	t.Helper()
+	ca, err := localca.New(localca.Options{})
+	if err != nil {
+		t.Fatalf("localca.New: %v", err)
+	}
+	srv, err := ca.TLSServer(jenkinsHandler(t, token), localca.LeafOptions{Hosts: hosts})
+	if err != nil {
+		t.Fatalf("TLSServer: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	caPath, err := ca.WriteCertPEM(filepath.Join(t.TempDir(), "ca.pem"))
+	if err != nil {
+		t.Fatalf("WriteCertPEM: %v", err)
+	}
+	return srv, caPath
+}
+
 func TestVerifyTLSAndCustomCA(t *testing.T) {
-	srv := httptest.NewTLSServer(jenkinsHandler(t, "secret"))
-	defer srv.Close()
+	srv, caPath := privateCAServer(t, "secret")
 	dir := t.TempDir()
 	draft := Draft{ID: "id", Name: "TLS", URL: srv.URL + "/jenkins", Username: "user", ReplacementToken: "secret"}
-	if _, err := Verify(context.Background(), dir, draft); err == nil || !strings.Contains(err.Error(), "TLS certificate") {
+	// The message must name the setting that fixes this cause, not just report
+	// that verification failed.
+	_, err := Verify(context.Background(), dir, draft)
+	if err == nil {
 		t.Fatal("untrusted TLS must fail")
 	}
-	path := filepath.Join(dir, "ca.pem")
-	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(err.Error(), "ca_cert_path") {
+		t.Fatalf("untrusted TLS error = %q, want it to name ca_cert_path", err)
 	}
-	draft.CAPath = path
+	if strings.Contains(err.Error(), srv.URL) || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("setup error leaked the URL or token: %q", err)
+	}
+
+	draft.CAPath = caPath
 	if _, err := Verify(context.Background(), dir, draft); err != nil {
 		t.Fatal(err)
+	}
+
+	// An unusable CA must be reported here rather than at the first request
+	// after saving.
+	draft.CAPath = filepath.Join(dir, "absent.pem")
+	if _, err := Verify(context.Background(), dir, draft); err == nil {
+		t.Fatal("a missing CA certificate must fail the connection test")
+	}
+	notPEM := filepath.Join(dir, "not-pem.pem")
+	if err := os.WriteFile(notPEM, []byte("CA certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	draft.CAPath = notPEM
+	if _, err := Verify(context.Background(), dir, draft); err == nil {
+		t.Fatal("a CA certificate that is not PEM must fail the connection test")
+	}
+}
+
+// A hostname mismatch is not fixed by setting ca_cert_path, so the wizard must
+// not blame the CA for it.
+func TestVerifyDistinguishesHostnameMismatchFromUntrustedCA(t *testing.T) {
+	// The CA is trusted, but the certificate covers only an unrelated host.
+	srv, caPath := privateCAServer(t, "secret", "jenkins.internal")
+	draft := Draft{ID: "id", Name: "TLS", URL: srv.URL + "/jenkins", Username: "user", ReplacementToken: "secret", CAPath: caPath}
+
+	_, err := Verify(context.Background(), t.TempDir(), draft)
+	if err == nil {
+		t.Fatal("a certificate that does not cover the hostname must fail")
+	}
+	if !strings.Contains(err.Error(), "jenkins_url") {
+		t.Errorf("hostname mismatch error = %q, want it to name jenkins_url", err)
 	}
 }
 

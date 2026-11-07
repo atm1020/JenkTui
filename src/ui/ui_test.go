@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	stdcontext "context"
 	"errors"
 	"net/http"
@@ -94,7 +93,10 @@ func TestNewJenkinsClientOwnsRequesterClientAndKeepsConfiguration(t *testing.T) 
 		APIToken:   "token",
 	}
 
-	jenkins, client := newJenkinsClient(server, t.TempDir())
+	jenkins, client, err := newJenkinsClient(server, t.TempDir())
+	if err != nil {
+		t.Fatalf("newJenkinsClient() error = %v", err)
+	}
 	requester, ok := jenkins.Requester.(*gojenkins.Requester)
 	if !ok {
 		t.Fatalf("requester = %T, want *gojenkins.Requester", jenkins.Requester)
@@ -116,30 +118,103 @@ func TestNewJenkinsClientOwnsRequesterClientAndKeepsConfiguration(t *testing.T) 
 	}
 }
 
-func TestAddCACertificateAddsFileContentsToRequester(t *testing.T) {
-	certificate := []byte("CA certificate")
+// A CA certificate must reach the transport that carries Jenkins traffic;
+// configuring it anywhere else leaves verification on the system roots.
+func TestNewJenkinsClientInstallsConfiguredCAOnTransport(t *testing.T) {
 	certPath := filepath.Join(t.TempDir(), "company-ca.pem")
-	if err := os.WriteFile(certPath, certificate, 0o600); err != nil {
+	if err := os.WriteFile(certPath, testCAPEM(t), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	jenkins, _ := newJenkinsClient(&context.ServerConfig{JenkinsURL: "https://jenkins.example"}, t.TempDir())
 
-	if err := addCACertificate(jenkins, certPath); err != nil {
-		t.Fatalf("addCACertificate() error = %v", err)
+	_, client, err := newJenkinsClient(&context.ServerConfig{
+		JenkinsURL: "https://jenkins.example", CACertPath: certPath,
+	}, t.TempDir())
+	if err != nil {
+		t.Fatalf("newJenkinsClient() error = %v", err)
 	}
-	requester := jenkins.Requester.(*gojenkins.Requester)
-	if !bytes.Equal(requester.CACert, certificate) {
-		t.Fatalf("requester CA certificate = %q, want %q", requester.CACert, certificate)
+
+	transport := client.Transport.(*http.Transport)
+	if transport.TLSClientConfig == nil || transport.TLSClientConfig.RootCAs == nil {
+		t.Fatal("configured CA certificate did not reach the transport's root pool")
 	}
 }
 
-func TestAddCACertificateReportsMissingFile(t *testing.T) {
-	certPath := filepath.Join(t.TempDir(), "missing-ca.pem")
-	jenkins, _ := newJenkinsClient(&context.ServerConfig{JenkinsURL: "https://jenkins.example"}, t.TempDir())
+func TestNewJenkinsClientWithoutCAUsesSystemRoots(t *testing.T) {
+	_, client, err := newJenkinsClient(&context.ServerConfig{JenkinsURL: "https://jenkins.example"}, t.TempDir())
+	if err != nil {
+		t.Fatalf("newJenkinsClient() error = %v", err)
+	}
+	// Transport.Clone carries a TLSClientConfig for ALPN, so system
+	// verification shows up as an empty root pool rather than a nil config.
+	if config := client.Transport.(*http.Transport).TLSClientConfig; config != nil && config.RootCAs != nil {
+		t.Fatal("no CA was configured, so the transport must keep system verification")
+	}
+}
 
-	err := addCACertificate(jenkins, certPath)
-	if err == nil || !strings.Contains(err.Error(), certPath) {
-		t.Fatalf("addCACertificate() error = %v, want missing path error", err)
+func TestNewJenkinsClientReportsUnusableCA(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-ca.pem")
+	if _, _, err := newJenkinsClient(&context.ServerConfig{CACertPath: missing}, t.TempDir()); err == nil ||
+		!strings.Contains(err.Error(), missing) {
+		t.Fatalf("missing CA error = %v, want one naming %s", err, missing)
+	}
+
+	garbage := filepath.Join(t.TempDir(), "not-pem.pem")
+	if err := os.WriteFile(garbage, []byte("CA certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := newJenkinsClient(&context.ServerConfig{CACertPath: garbage}, t.TempDir()); err == nil ||
+		!strings.Contains(err.Error(), "PEM") {
+		t.Fatalf("invalid PEM error = %v, want one naming PEM", err)
+	}
+}
+
+// A server whose CA cannot be loaded must not leave the app half-switched.
+func TestSelectServerKeepsPreviousClientWhenCAIsUnusable(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	dataDir := t.TempDir()
+	oldServer := context.ServerConfig{ID: "old", JenkinsURL: "http://old.example", Username: "old-user"}
+	oldJenkins, oldClient, err := newJenkinsClient(&oldServer, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := router.NewRouter()
+	r.SetInitialView(testViewModel{})
+	app := &App{
+		ctx: &context.ProgramContext{
+			Jenkins: oldJenkins, ServerConfig: &oldServer, Config: cfg,
+			ConfigDir: t.TempDir(), DataDir: dataDir, DataLogsDir: t.TempDir(),
+			RunStore: store.NewForServer(dataDir, oldServer.ID),
+		},
+		httpClient: oldClient,
+		router:     r,
+	}
+	t.Cleanup(func() {
+		if app.ctx.RunStore != nil {
+			_ = app.ctx.RunStore.Close()
+		}
+	})
+
+	broken := context.ServerConfig{ID: "broken", JenkinsURL: "https://new.example", CACertPath: filepath.Join(t.TempDir(), "absent.pem")}
+	cmd := app.selectServer(broken)
+
+	if cmd == nil {
+		t.Fatal("selectServer returned no command for an unusable CA")
+	}
+	msg, ok := cmd().(util.ErrorMsg)
+	if !ok {
+		t.Fatalf("message = %T, want util.ErrorMsg", cmd())
+	}
+	if msg.Title == "" {
+		t.Error("error message has no title")
+	}
+	if app.httpClient != oldClient {
+		t.Error("failed switch replaced the owned HTTP client")
+	}
+	if app.ctx.ServerConfig.ID != oldServer.ID {
+		t.Errorf("ServerConfig = %q, want the previous server %q", app.ctx.ServerConfig.ID, oldServer.ID)
+	}
+	if app.router == nil {
+		t.Error("failed switch tore down the router")
 	}
 }
 
@@ -148,7 +223,7 @@ func TestSelectServerReplacesOwnedHTTPClient(t *testing.T) {
 	configDir := t.TempDir()
 	dataDir := t.TempDir()
 	oldServer := context.ServerConfig{ID: "old", JenkinsURL: "http://old.example", Username: "old-user"}
-	oldJenkins, oldClient := newJenkinsClient(&oldServer, t.TempDir())
+	oldJenkins, oldClient, _ := newJenkinsClient(&oldServer, t.TempDir())
 	r := router.NewRouter()
 	r.SetInitialView(testViewModel{})
 	app := &App{

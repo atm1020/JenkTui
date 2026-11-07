@@ -6,6 +6,9 @@ vars:
   VERSION:
     sh: git describe --tags --always 2>/dev/null || echo "dev"
   COMPOSE_FILE: dev/docker/docker-compose.yaml
+  TLS_DIR: dev/docker/tls
+  TLS_CA: dev/docker/tls/ca.pem
+  TLS_URL: https://localhost:8443
 
 env:
   CGO_ENABLED: 0
@@ -327,6 +330,51 @@ tasks:
     cmds:
       - go run ./dev/seed -url http://localhost:8081 {{.CLI_ARGS}}
 
+  seed:tls:
+    desc: Seed the HTTPS Jenkins (port 8443) over its private CA
+    deps: [certs:require]
+    cmds:
+      - go run ./dev/seed -url {{.TLS_URL}} -ca {{.TLS_CA}} {{.CLI_ARGS}}
+
+  certs:
+    desc: Issue the dev CA and server certificate for the HTTPS Jenkins stack
+    cmds:
+      - go run ./dev/certs {{.CLI_ARGS}}
+
+  certs:renew:
+    desc: Reissue only the server certificate, keeping the CA (saved ca_cert_path stays valid)
+    cmds:
+      - go run ./dev/certs -reuse-ca {{.CLI_ARGS}}
+
+  certs:broken:
+    desc: "Reissue a deliberately broken server certificate to check error messages (MODE=expired|wrong-host)"
+    vars:
+      MODE: '{{.MODE | default "expired"}}'
+    cmds:
+      - go run ./dev/certs -reuse-ca -mode {{.MODE}}
+      - docker compose -f {{.COMPOSE_FILE}} --profile tls restart jenkins-tls
+
+  certs:path:
+    desc: Print the absolute ca_cert_path to put in server.json
+    deps: [certs:require]
+    cmds:
+      - cmd: realpath {{.TLS_CA}}
+        silent: true
+
+  certs:clean:
+    desc: Delete the generated dev TLS material
+    cmds:
+      - rm -rf {{.TLS_DIR}}
+
+  certs:require:
+    internal: true
+    cmds:
+      - |
+        if [ ! -f {{.TLS_CA}} ]; then
+          echo "missing {{.TLS_CA}} — generate it first: task certs" >&2
+          exit 1
+        fi
+
   config:
     desc: Alias for config:folder
     cmds:
@@ -392,15 +440,34 @@ tasks:
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} up -d jenkins-2479
 
+  jenkins:tls:
+    desc: Start Jenkins LTS behind the HTTPS proxy on :8443 (private CA)
+    deps: [certs:require]
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} --profile tls up -d jenkins-lts jenkins-tls
+      - cmd: |
+          echo
+          echo "HTTPS Jenkins:  {{.TLS_URL}}"
+          echo "ca_cert_path:   $(realpath {{.TLS_CA}})"
+          echo
+          echo "Seed it:        task seed:tls"
+          echo "Drive the app:  JT_JENKINS_URL={{.TLS_URL}} JT_CA_CERT=$(realpath {{.TLS_CA}}) go run ./dev/jt up tls"
+        silent: true
+
+  jenkins:tls:stop:
+    desc: Stop the HTTPS proxy, leaving Jenkins on :8080
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} --profile tls stop jenkins-tls
+
   jenkins:stop:
     desc: Stop local Jenkins stack
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} down
+      - docker compose -f {{.COMPOSE_FILE}} --profile tls down
 
   jenkins:reset:
     desc: Reset local Jenkins volumes and restart
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} down -v
+      - docker compose -f {{.COMPOSE_FILE}} --profile tls down -v
       - docker compose -f {{.COMPOSE_FILE}} up -d
 
   jenkins:lts:reset:

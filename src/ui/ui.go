@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -13,7 +12,7 @@ import (
 	"github.com/atm1020/jenktui/src/buildstatus"
 	"github.com/atm1020/jenktui/src/config"
 	"github.com/atm1020/jenktui/src/context"
-	"github.com/atm1020/jenktui/src/jenkinsclient"
+	"github.com/atm1020/jenktui/src/jenkinshttp"
 	"github.com/atm1020/jenktui/src/jobref"
 	"github.com/atm1020/jenktui/src/notification"
 	"github.com/atm1020/jenktui/src/poll"
@@ -96,27 +95,14 @@ type App struct {
 	notifiedCompletions map[string]struct{}
 }
 
-func newJenkinsClient(server *context.ServerConfig, logsDir string) (*gojenkins.Jenkins, *http.Client) {
-	httpClient := jenkinsclient.New(jenkinsclient.Options{})
+func newJenkinsClient(server *context.ServerConfig, logsDir string) (*gojenkins.Jenkins, *http.Client, error) {
+	httpClient, err := jenkinshttp.New(jenkinshttp.Options{CACertPath: server.CACertPath})
+	if err != nil {
+		return nil, nil, err
+	}
 	jenkins := gojenkins.CreateJenkins(httpClient, server.JenkinsURL, server.Username, server.APIToken)
 	jenkins.SetLogger(applog.GoJenkinsLogger(logsDir))
-	return jenkins, httpClient
-}
-
-func addCACertificate(jenkins *gojenkins.Jenkins, certPath string) error {
-	if certPath == "" {
-		return nil
-	}
-	requester := jenkins.Requester.(*gojenkins.Requester)
-	if requester.CACert != nil {
-		return nil
-	}
-	caCert, err := os.ReadFile(certPath)
-	if err != nil {
-		return fmt.Errorf("read CA certificate %q: %w", certPath, err)
-	}
-	requester.CACert = caCert
-	return nil
+	return jenkins, httpClient, nil
 }
 
 func InitAppModel(subdirs *config.Subdirs) (*App, error) {
@@ -181,8 +167,8 @@ func InitAppModel(subdirs *config.Subdirs) (*App, error) {
 	var runStore *store.Store
 	username := ""
 	if serverCfg != nil {
-		jenkins, httpClient = newJenkinsClient(serverCfg, subdirs.DataLogsDir)
-		if err := addCACertificate(jenkins, serverCfg.CACertPath); err != nil {
+		jenkins, httpClient, err = newJenkinsClient(serverCfg, subdirs.DataLogsDir)
+		if err != nil {
 			return nil, fmt.Errorf("failed to configure Jenkins server %q: %w", serverCfg.Name, err)
 		}
 		runStore = store.NewForServer(dataDir, serverCfg.ID)
@@ -335,9 +321,6 @@ func (a *App) newServerSelectorDialog() *serverselector.Dialog {
 
 func (a *App) initJenkinsClient() tea.Cmd {
 	return func() tea.Msg {
-		if err := addCACertificate(a.ctx.Jenkins, a.ctx.ServerConfig.CACertPath); err != nil {
-			return JenkinsInitErrMsg{Error: err}
-		}
 		ctx, cancel := a.ctx.RequestContext()
 		defer cancel()
 		_, err := a.ctx.Jenkins.Init(ctx)
@@ -581,7 +564,7 @@ func (a *App) handleCompletionDeliveryDone(msg completionDeliveryDoneMsg) tea.Cm
 func (a *App) handleJenkinsInitError(msg JenkinsInitErrMsg) tea.Cmd {
 	return util.CmdHandler(util.ErrorMsg{
 		Title: "Jenkins connection failed",
-		Error: msg.Error,
+		Error: jenkinshttp.Describe(msg.Error),
 	})
 }
 
@@ -914,11 +897,21 @@ func (a *App) quit() tea.Cmd {
 	if a.ctx != nil && a.ctx.PollManager != nil {
 		a.ctx.PollManager.Stop()
 	}
-	jenkinsclient.CloseIdle(a.httpClient)
+	jenkinshttp.CloseIdle(a.httpClient)
 	return tea.Quit
 }
 
 func (a *App) selectServer(server context.ServerConfig) tea.Cmd {
+	// Keep the current server active if the replacement client cannot be configured.
+	jenkins, httpClient, err := newJenkinsClient(&server, a.ctx.DataLogsDir)
+	if err != nil {
+		log.Error("Failed to configure Jenkins client on server switch", "error", err, "serverID", server.ID)
+		return util.CmdHandler(util.ErrorMsg{
+			Title: "Server switch failed",
+			Error: jenkinshttp.Describe(err),
+		})
+	}
+
 	cleanup := a.replaceDialog(nil)
 	if a.ctx.PollManager != nil {
 		a.ctx.PollManager.Stop()
@@ -927,8 +920,7 @@ func (a *App) selectServer(server context.ServerConfig) tea.Cmd {
 	if a.router != nil {
 		a.router.CleanUp()
 	}
-	jenkinsclient.CloseIdle(a.httpClient)
-	a.httpClient = nil
+	jenkinshttp.CloseIdle(a.httpClient)
 	a.ctx.ServerConfig = &server
 
 	a.ctx.Config.LastServerID = server.ID
@@ -937,7 +929,7 @@ func (a *App) selectServer(server context.ServerConfig) tea.Cmd {
 		// Don't fail - selection still applies for this session
 	}
 
-	a.ctx.Jenkins, a.httpClient = newJenkinsClient(&server, a.ctx.DataLogsDir)
+	a.ctx.Jenkins, a.httpClient = jenkins, httpClient
 	// Close the previous store's SQLite pool; otherwise every server switch
 	// leaks a *sql.DB (connections + management goroutines) for the process
 	// lifetime.

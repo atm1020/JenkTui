@@ -131,10 +131,6 @@ JenkTui supports multiple servers and still accepts manually managed configurati
 ```
 
 `ca_cert_path` is optional and accepts a PEM-encoded CA certificate or bundle.
-Setup validates the certificate before saving. For existing configurations,
-JenkTui reads it before connecting and provides it to the Jenkins requester.
-An unreadable configured certificate remains a startup error. When omitted,
-normal system certificate verification is used; insecure TLS bypass is not offered.
 
 ### Application Configuration (`config.json`)
 
@@ -424,11 +420,13 @@ The stack in `dev/docker/` is a disposable Jenkins for TUI work. Setup wizard is
 |---------|-----|-------|
 | LTS | http://localhost:8080 | default target for `task seed` |
 | 2.479.3 | http://localhost:8081 | older controller; seed with `task seed:2479` |
+| LTS over HTTPS | https://localhost:8443 | private CA; opt-in, see [HTTPS with a private CA](#https-with-a-private-ca) |
 
 ```bash
 task jenkins          # start both controllers
 task jenkins:lts      # LTS only
 task jenkins:2479     # 2.479 only
+task jenkins:tls      # LTS behind the HTTPS proxy on :8443
 task jenkins:stop
 task jenkins:reset    # wipe volumes and restart
 ```
@@ -451,6 +449,62 @@ Point `~/.config/JenkTui/server.json` at the local controller. The password is a
 
 `task config` opens the config directory in `$EDITOR`.
 
+### HTTPS with a private CA
+
+Most company Jenkins instances are served over HTTPS with a certificate issued
+by an internal CA that no system trust store knows, which is exactly what
+`ca_cert_path` exists for. Plain `http://localhost:8080` never exercises that
+path, so the stack can also run behind a TLS proxy using a generated CA.
+
+```bash
+task certs            # issue dev/docker/tls/{ca,server}.pem (+ keys)
+task jenkins:tls      # start LTS + the HTTPS proxy on :8443
+task seed:tls         # seed over HTTPS, trusting the generated CA
+task certs:path       # print the absolute ca_cert_path to paste below
+```
+
+Then add `ca_cert_path` to the server entry:
+
+```json
+{
+  "servers": [
+    {
+      "id": "local-tls",
+      "name": "Local TLS",
+      "jenkins_url": "https://localhost:8443",
+      "username": "admin",
+      "api_token": "admin",
+      "ca_cert_path": "/abs/path/to/jenktui/dev/docker/tls/ca.pem"
+    }
+  ]
+}
+```
+
+Leaving `ca_cert_path` out is a useful test in itself: the connection must be
+refused, because the CA is genuinely untrusted.
+
+The generated material lives in `dev/docker/tls/` and is gitignored — the keys
+are unprotected development material and must never be committed.
+
+To check how JenkTui reports a broken certificate, reissue a deliberately bad
+one. Both keep the CA, so a saved `ca_cert_path` stays valid:
+
+```bash
+task certs:broken MODE=expired      # past its NotAfter
+task certs:broken MODE=wrong-host   # covers jenkins.internal only
+task certs:renew                    # back to a working certificate
+```
+
+| Situation | What JenkTui reports |
+|-----------|----------------------|
+| `ca_cert_path` unset | the server's certificate was issued by an unknown authority; set `ca_cert_path` … |
+| `MODE=expired` | the server's certificate has expired; contact your Jenkins administrator |
+| `MODE=wrong-host` | the server's certificate does not cover this hostname; check that `jenkins_url` matches … |
+| `https://` against `:8080` | the server answered with plain HTTP; change `jenkins_url` to use `http://` |
+
+`task jenkins:tls:stop` removes the proxy and leaves Jenkins on `:8080`;
+`task certs:clean` deletes the generated material.
+
 ### Seed test data
 
 After Jenkins is up, load users, folders, and jobs:
@@ -460,6 +514,7 @@ task seed             # users + jobs on :8080
 task seed:users
 task seed:jobs
 task seed:2479        # same fixtures on :8081
+task seed:tls         # same fixtures over HTTPS on :8443
 ```
 
 Extra users (`developer`, `qa`, `ops`) use matching passwords. Jobs cover the cases the TUI needs: long logs, flaky failures, in-progress pulse, parameters, artifacts, approvals, and a long build history.
@@ -481,6 +536,20 @@ dlv connect 127.0.0.1:2345
 ```
 
 Or attach an IDE debugger to `127.0.0.1:2345` (Delve API v2). `task debug` accepts extra args via `task debug -- <flags>`.
+
+`dev/jt` drives a real instance in an isolated `$HOME`. It targets the plain
+HTTP stack by default and the HTTPS one when given a CA:
+
+```bash
+go run ./dev/jt up demo
+
+JT_JENKINS_URL=https://localhost:8443 \
+JT_CA_CERT=$(task certs:path) \
+  go run ./dev/jt up tls
+```
+
+The CA path is written into the instance's `server.json` as `ca_cert_path`, so
+the app under test resolves trust exactly as a user's install would.
 
 Profiling (`task run:dev` first):
 

@@ -34,6 +34,9 @@ bin/
 /server.json
 /config.json
 
+# Development TLS material from `go run ./dev/certs` (private keys)
+/dev/docker/tls/
+
 # Local agent/tooling checkouts
 .claude/
 .crush/

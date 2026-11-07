@@ -98,17 +98,70 @@ func TestLoadConfigGuards(t *testing.T) {
 	}
 }
 
+// https is accepted so the TLS dev stack (task jenkins:tls) can be driven; the
+// guard is about the host being loopback, not about the scheme.
 func TestIsLocalURL(t *testing.T) {
 	for url, want := range map[string]bool{
-		"http://127.0.0.1:8080":      true,
-		"http://localhost:8081":      true,
-		"http://127.0.0.1.evil:8080": false,
-		"https://127.0.0.1:8080":     false,
-		"http://10.0.0.5:8080":       false,
+		"http://127.0.0.1:8080":       true,
+		"http://localhost:8081":       true,
+		"https://127.0.0.1:8443":      true,
+		"https://localhost:8443":      true,
+		"http://127.0.0.1.evil:8080":  false,
+		"https://127.0.0.1.evil:8443": false,
+		"http://10.0.0.5:8080":        false,
+		"https://jenkins.corp:443":    false,
 	} {
 		if got := isLocalURL(url); got != want {
-			t.Errorf("isLocalURL(%q) = %v", url, got)
+			t.Errorf("isLocalURL(%q) = %v, want %v", url, got, want)
 		}
+	}
+}
+
+// A configured CA has to land in server.json as ca_cert_path, and stay absent
+// when none is set, or the app falls back to system roots.
+func TestServerJSONCarriesCACertPath(t *testing.T) {
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	in := newInstance(config{
+		jenkinsURL: "https://127.0.0.1:8443", user: "u", token: "t",
+		caCertPath: caPath, secondServer: true,
+	}, "x", nil, nil)
+
+	raw, err := in.serverJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Servers []struct {
+			CACertPath string `json:"ca_cert_path"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Servers) != 2 {
+		t.Fatalf("got %d servers, want 2", len(parsed.Servers))
+	}
+	for i, server := range parsed.Servers {
+		if server.CACertPath != caPath {
+			t.Errorf("server %d ca_cert_path = %q, want %q", i, server.CACertPath, caPath)
+		}
+	}
+
+	withoutCA := newInstance(config{jenkinsURL: "http://127.0.0.1:8080", user: "u", token: "t"}, "x", nil, nil)
+	raw, err = withoutCA.serverJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "ca_cert_path") {
+		t.Errorf("server.json carries ca_cert_path with none configured: %s", raw)
+	}
+}
+
+func TestLoadConfigRejectsUnreadableCACert(t *testing.T) {
+	t.Setenv("JT_JENKINS_URL", "https://127.0.0.1:8443")
+	t.Setenv("JT_CA_CERT", filepath.Join(t.TempDir(), "absent.pem"))
+	if _, err := loadConfig(context.Background()); err == nil {
+		t.Error("an unreadable JT_CA_CERT was accepted")
 	}
 }
 
