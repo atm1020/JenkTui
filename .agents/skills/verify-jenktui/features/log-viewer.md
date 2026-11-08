@@ -7,7 +7,7 @@ lines.
 
 ## Sub-features
 
-- `log-open`: `L` on a job page (latest build) or a build page opens the
+- `log-open`: `L` on a job page (stage pane's selected build) or a build page opens the
   full log. The footer breadcrumb ends with `console`.
 - `log-status`: a status line `Loaded: a-b/N | Line: x | Scroll: y%`.
 - `log-move`: `j`/`k` move by line, `{` pages down, `}` pages up, `G` (or
@@ -21,9 +21,9 @@ lines.
 
 ## How to get to it (user POV)
 
-- Job page → `L` (the latest build's log).
+- Job page → `L` (the stage pane's selected build's log).
 - Build page → `L` (full log), or `ctrl+l` (the selected stage's step log;
-  this is a different viewer, keyed by stage).
+  this uses the selected flow step and leaves the build breadcrumb unchanged).
 - My Runs row → `L`.
 
 ## Driving it with jt
@@ -45,13 +45,13 @@ Steps:
     If you skip the build-box wait, the job page silently drops `L`.
 - **Open the log.**
   - Run `$J keys RUN L && $J wait RUN 'Loaded:'`.
-  - The status line reads `Loaded: 1-250/3019 | Line: 1 | Scroll: 0%`.
-    The log loads in 250-line chunks. The footer matches
-    `log-heavy-job.*console`.
+  - Expect `Loaded: a-b/N | Line: 1 | Scroll: 0%`, with the actual log's
+    total. Buffer windows depend on viewport size, not fixed 250-line
+    chunks. The footer matches `log-heavy-job.*console`.
 - **Jump to the bottom and back.**
   - Run `$J keys RUN G && $J wait RUN 'Scroll: 100%'`. The status line
-    becomes `Loaded: 2883-3019/3019`, which means the tail chunk was
-    fetched.
+    shows a loaded range ending at the actual total, proving the tail
+    window was fetched.
   - Then run `$J type RUN gg && $J wait RUN 'Line: 1 .*Scroll: 0%'`.
 - **Search.**
   - Run `$J keys RUN / && $J type RUN 'Processing batch' && $J keys RUN Enter && $J wait RUN '1/500'`.
@@ -69,14 +69,16 @@ Steps:
 
 ## Gotchas
 
-- `gg` is a two-key chord. Send both keys in one call with
-  `$J type RUN gg`. If you split them across calls with a `wait` in
-  between, the chord can time out.
+- `gg` is a two-key chord. Send both keys with `$J type RUN gg`.
+  An intervening movement key clears the pending `g`.
 - Page keys look reversed: by default, `{` pages **down** and `}` pages
   **up**.
 - After a search, the focus stays in the search box until you press Enter.
   Typing `n` before Enter adds an `n` to the query.
 - `y` writes the **host** clipboard (it escapes the sandbox). Use it only
   when verifying yank, and say so in the proof.
-- A running build's log keeps growing, so the `Loaded:` total changes. Use a
-  completed build for counts.
+- Full console opening downloads a snapshot; it does not continuously
+  tail a running build. Reopening can fetch newer output. Use a completed,
+  numbered build for count comparisons.
+- Full `Loaded:` and match-counter handles require a wide terminal; keep
+  the default 160 columns for these recipes.

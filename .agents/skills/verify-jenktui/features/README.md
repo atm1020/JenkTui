@@ -18,9 +18,9 @@ with `J=dist/bin/jt` (build it once per session with
 
 ## Driving conventions
 
-- Start each recipe from the home view, unless its preconditions say
-  otherwise. If you are lost, press `b` until the footer breadcrumb reads
-  `home`, or run `down` and `up` again.
+- Start each recipe from home unless its preconditions say otherwise.
+  Back history retains only three views; if home is no longer reachable,
+  run `down` and `up` rather than repeatedly pressing `b`.
 - After **every** keypress that changes the view, wait for the next view's
   stable text with `$J wait` before you send the next key.
 - Use `$J type` for text that goes into a search box. Use `$J keys` for named
@@ -31,7 +31,8 @@ with `J=dist/bin/jt` (build it once per session with
   - `DevTeam/Frontend/mobile-app`: pipeline, about 26s per build, 9 stages
   - `DevTeam/Backend/log-heavy-job`: 1,500+ log lines, including 500 lines of
     `Processing batch`
-  - `DevTeam/Backend`: a folder with 6 items
+  - `DevTeam/Backend`: currently five seeded children; check the actual
+    Jenkins count and row order rather than assuming a fixed fixture.
 
 ## Proof and skip reporting
 
@@ -59,33 +60,29 @@ order:
 
 ## Features
 
-Every main page and dialog, with its recipe. All were driven end to end on
-2026-10-03 against Jenkins 2.568.3; the evidence is in `dist/verify/proof-*`.
+One row per feature file; related surfaces share a recipe. Historical
+end-to-end evidence is in `dist/verify/proof-*` (2026-10-03, Jenkins 2.568.3).
+All eight files received source review and feature-level live coverage on
+2026-11-08 against Jenkins 2.580.1: `dist/verify/maintain-map/` and
+`dist/verify/maintain-server/`. That maintenance pass does not establish every
+sub-feature or optional external effect below.
 
-| Page / dialog | Recipe |
+| Surfaces | Recipe |
 |---|---|
-| Home splash | [home-theme-help.md](./home-theme-help.md) |
-| Global search dialog | [search-and-browse.md](./search-and-browse.md) |
-| Folder listing | [search-and-browse.md](./search-and-browse.md) |
-| Job page | [job-and-build.md](./job-and-build.md) |
-| Build page + step log (`ctrl+l`) | [job-and-build.md](./job-and-build.md) |
+| Home, theme preview/save/cancel, local/global help | [home-theme-help.md](./home-theme-help.md) |
+| Global search, folder listing, back/forward | [search-and-browse.md](./search-and-browse.md) |
+| Job, build, selected step log, parameter display | [job-and-build.md](./job-and-build.md) |
 | Console log viewer | [log-viewer.md](./log-viewer.md) |
-| Trigger confirm + My Runs | [trigger-and-my-runs.md](./trigger-and-my-runs.md) |
+| Trigger confirmation, My Runs | [trigger-and-my-runs.md](./trigger-and-my-runs.md) |
 | Favorites | [favorites.md](./favorites.md) |
-| Build params dialog | [build-actions.md](./build-actions.md) |
-| Artifact selector | [build-actions.md](./build-actions.md) |
-| Script view (replay) | [build-actions.md](./build-actions.md) |
-| Cancel confirm | [build-actions.md](./build-actions.md) |
-| Server selector | [server-selector.md](./server-selector.md) |
-| Theme selector | [home-theme-help.md](./home-theme-help.md) |
-| Help (`?`) | [home-theme-help.md](./home-theme-help.md) |
+| Build form, artifacts/open-folder confirmation, replay, cancellation | [build-actions.md](./build-actions.md) |
+| Server picker, add/edit setup, private-CA test/save | [server-selector.md](./server-selector.md) |
 
 Not verified yet:
 
 - Replay edit (`e` opens `$EDITOR`)
 - Open in browser (`o`/`O`)
 - Log yank (`y`, which writes the host clipboard)
-- Params view (`P`)
 - Node selector
 - Multibranch (`merge-queue-test`)
 - Active Choices / dynamic parameters (`Dynamic/`)
@@ -103,8 +100,8 @@ harness failures:
    root-caused.
 3. Favorites: `d` gives no feedback, and the old toast lingers
    ([favorites.md](./favorites.md)).
-4. Seed data: the `all-param-types` `REGION` choice parameter has no
-   choices, so Jenkins returns 500 on trigger
+4. Older seed data: `all-param-types` can retain empty `REGION` choices
+   and return 500. Current seed XML is fixed; check/reseed the fixture
    ([build-actions.md](./build-actions.md)).
 5. Logging: router evictions are logged at `ERRO`, so `ERRO` lines are
    noise. `doctor` counts them instead of failing on them.

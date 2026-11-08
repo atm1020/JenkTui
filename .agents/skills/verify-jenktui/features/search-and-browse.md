@@ -8,7 +8,8 @@ listing, and `b` walks back through navigation history.
 
 - `search-open`: `ctrl+p` opens the `Global Search` dialog from any view.
 - `search-query`: typing a name and pressing Enter lists matching items with
-  `N item(s)`, a `»` breadcrumb, and a `/job/...` path.
+  `N item(s)`, a leaf name, and a parent `»` breadcrumb on the next line;
+  no URL is displayed.
 - `search-clear`: `ctrl+r` clears the input.
 - `search-open-job`: Enter on a job result opens its job page.
 - `search-open-folder`: Enter on a folder result opens the folder listing,
@@ -37,24 +38,26 @@ Steps:
   - The search dialog appears over the current view.
 - **Search for a job.**
   - Run `$J type RUN mobile-app && $J keys RUN Enter && $J wait RUN '1 item'`.
-  - The result row reads `DevTeam » Frontend » mobile-app` and
-    `/job/DevTeam/job/Frontend/job/mobile-app/`.
+  - The result shows `mobile-app` above `DevTeam » Frontend`.
 - **Open the job.**
   - Run `$J keys RUN Enter && $J crumb RUN 'Frontend.*mobile-app' && $J wait RUN '│ #[0-9]+ │'`.
   - The footer breadcrumb matches `DevTeam.*Frontend.*mobile-app`, and
     build boxes are drawn, which means the page is ready for keys.
 - **Search for a folder.**
   - Run `$J keys RUN C-p && $J wait RUN 'Global Search'`.
-  - Then run `$J keys RUN C-r && $J wait RUN 'Global Search' && $J type RUN Backend && $J keys RUN Enter && $J wait RUN 'DevTeam » Backend'`.
+  - Then run `$J type RUN Backend && $J keys RUN Enter && $J wait RUN '‣ .*Backend'`.
+    The parent breadcrumb is `DevTeam`, separate from the leaf name.
 - **Open the folder.**
-  - Run `$J keys RUN Enter && $J crumb RUN 'DevTeam.*Backend' && $J wait RUN '6 items'`.
+  - Run `$J keys RUN Enter && $J crumb RUN 'DevTeam.*Backend' && $J wait RUN '[0-9]+ items'`.
   - The listing shows `ansi-color-log`, `api-service`, `log-heavy-job`, and
     so on. The footer matches `DevTeam.*Backend`.
 - **Browse into a child.**
-  - Run `$J keys RUN j && $J keys RUN Enter && $J crumb RUN 'Backend.*api-service' && $J wait RUN '│ #[0-9]+ │'`.
+  - Inspect the child order first. With `ansi-color-log` first and
+    `api-service` second, run `$J keys RUN j Enter && $J crumb RUN 'Backend.*api-service' && $J wait RUN '│ #[0-9]+ │'`.
+    Otherwise use `j`/`k` to select the named child before Enter.
   - The footer matches `DevTeam.*Backend.*api-service`.
 - **Back.**
-  - Run `$J keys RUN b && $J wait RUN '6 items'`.
+  - Run `$J keys RUN b && $J wait RUN '[0-9]+ items'`.
   - The folder listing is back.
 - **Forward.**
   - Run `$J keys RUN ']' && $J crumb RUN 'Backend.*api-service'`.
@@ -72,13 +75,16 @@ Steps:
   closes only the dialog. If no dialog is open, `ctrl+c` quits the app.
 - Back history keeps only 3 views. After a longer path, `b` stops short of
   home.
-- The dialog keeps the previous query. Press `ctrl+r` before typing a new
-  one, or the new text is appended to the old.
+- Reopening with `ctrl+p` creates a fresh, empty dialog. To clear a query
+  within the same dialog, focus the input (`Tab` from results), then press
+  `ctrl+r`.
 - Results come from Jenkins's search API, so a short query such as `app`
   can return many pages (`h`/`l` change page). Use exact seed names.
 - The search box starts focused. Once results are shown, `j`/`k` move the
   selection instead of typing into the box. Press `Tab` to move focus back
   to the input.
+- Backend currently has five seeded jobs. Use Jenkins's actual child count,
+  not a fixed count or assumed ordering.
 - The seed folders are `DevTeam`, `Ops`, `QA`, and `Dynamic`. The live
   Jenkins also holds extra top-level jobs from other work (such as
   `badge-*`). Do not count on exact top-level item counts.
