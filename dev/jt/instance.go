@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atm1020/jenktui/src/jenkinshttp"
 	_ "modernc.org/sqlite"
 )
 
@@ -123,7 +124,11 @@ func (in *instance) jenkinsGet(ctx context.Context, path string) (int, []byte, e
 		return 0, nil, err
 	}
 	req.SetBasicAuth(in.cfg.user, in.cfg.token)
-	resp, err := http.DefaultClient.Do(req)
+	client, err := in.jenkinsClient()
+	if err != nil {
+		return 0, nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -143,14 +148,25 @@ type serverEntry struct {
 	JenkinsURL string `json:"jenkins_url"`
 	Username   string `json:"username"`
 	APIToken   string `json:"api_token"`
+	CACertPath string `json:"ca_cert_path,omitempty"`
+}
+
+func (in *instance) serverEntry(id, name string) serverEntry {
+	return serverEntry{id, name, in.cfg.jenkinsURL, in.cfg.user, in.cfg.token, in.cfg.caCertPath}
 }
 
 func (in *instance) serverJSON() ([]byte, error) {
-	servers := []serverEntry{{"local", "Local", in.cfg.jenkinsURL, in.cfg.user, in.cfg.token}}
+	servers := []serverEntry{in.serverEntry("local", "Local")}
 	if in.cfg.secondServer {
-		servers = append(servers, serverEntry{"local-b", "Local B", in.cfg.jenkinsURL, in.cfg.user, in.cfg.token})
+		servers = append(servers, in.serverEntry("local-b", "Local B"))
 	}
 	return json.Marshal(map[string]any{"servers": servers})
+}
+
+// jenkinsClient builds the probe client the same way the app does, so jt
+// cannot reach an instance the app under test would reject.
+func (in *instance) jenkinsClient() (*http.Client, error) {
+	return jenkinshttp.New(jenkinshttp.Options{CACertPath: in.cfg.caCertPath})
 }
 
 const tmuxConfig = "set -g remain-on-exit on\nset -g history-limit 10000\nset -g default-terminal tmux-256color\n"
@@ -167,7 +183,10 @@ func (in *instance) up(ctx context.Context, _ []string) error {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return errors.New("tmux not installed")
 	}
-	if code := in.jenkinsStatus(ctx, "/api/json"); code != http.StatusOK {
+	if code, _, err := in.jenkinsGet(ctx, "/api/json"); code != http.StatusOK {
+		if err != nil {
+			return fmt.Errorf("cannot reach jenkins at %s: %w (start it: task jenkins:lts, or task jenkins:tls for https; seed: task seed)", in.cfg.jenkinsURL, err)
+		}
 		return fmt.Errorf("jenkins at %s answered HTTP %d (start it: task jenkins:lts; seed: task seed)", in.cfg.jenkinsURL, code)
 	}
 
@@ -227,7 +246,7 @@ func (in *instance) up(ctx context.Context, _ []string) error {
 	if describe, err := exec.CommandContext(ctx, "git", "-C", in.cfg.repo, "describe", "--always", "--dirty").Output(); err == nil {
 		_ = os.WriteFile(filepath.Join(in.evid, "build.txt"), describe, 0o644)
 	}
-	in.transcriptf("up: %s (HOME=%s, %dx%d, jenkins=%s)", in.bin, in.home, in.cfg.cols, in.cfg.rows, in.cfg.jenkinsURL)
+	in.transcriptf("up: %s (HOME=%s, %dx%d, jenkins=%s, ca=%s)", in.bin, in.home, in.cfg.cols, in.cfg.rows, in.cfg.jenkinsURL, orNone(in.cfg.caCertPath))
 
 	if err := in.waitFor(ctx, readyPattern, 30*time.Second, false); err != nil {
 		return fmt.Errorf("app did not reach the home view (%w); see: jt log %s; then: jt down %s", err, in.run, in.run)
@@ -277,8 +296,14 @@ func (in *instance) doctor(ctx context.Context, _ []string) error {
 		info("%d ERRO lines in jenktui.log (router evictions are normal; read others with: jt log %s 200)",
 			bytes.Count(logData, []byte("ERRO")), in.run)
 	}
-	code := in.jenkinsStatus(ctx, "/api/json")
+	code, _, getErr := in.jenkinsGet(ctx, "/api/json")
 	check(code == http.StatusOK, fmt.Sprintf("Jenkins %s auth OK (HTTP %d)", in.cfg.jenkinsURL, code))
+	if getErr != nil {
+		info("jenkins request error: %v", getErr)
+	}
+	if in.cfg.caCertPath != "" {
+		info("ca_cert_path %s", in.cfg.caCertPath)
+	}
 	seeded := in.jenkinsStatus(ctx, "/job/DevTeam/job/Frontend/job/mobile-app/api/json")
 	check(seeded == http.StatusOK, fmt.Sprintf("seed data present (mobile-app HTTP %d)", seeded))
 	if b, err := os.ReadFile(filepath.Join(in.evid, "build.txt")); err == nil {
@@ -361,4 +386,11 @@ func backupDB(ctx context.Context, src, dst string) error {
 	defer db.Close()
 	_, err = db.ExecContext(ctx, "VACUUM INTO ?", dst)
 	return err
+}
+
+func orNone(value string) string {
+	if value == "" {
+		return "none"
+	}
+	return value
 }

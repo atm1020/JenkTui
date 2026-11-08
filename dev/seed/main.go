@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/atm1020/gojenkins"
+	"github.com/atm1020/jenktui/src/jenkinshttp"
 )
 
 type jobDef struct {
@@ -155,6 +156,7 @@ func main() {
 	userFlag := fs.String("user", envOr("JENKINS_USER", "admin"), "Jenkins username")
 	passFlag := fs.String("pass", envOr("JENKINS_PASS", "admin"), "Jenkins password or API token")
 	onlyFlag := fs.String("only", "", "Seed only jobs whose full path contains this substring")
+	caFlag := fs.String("ca", envOr("JENKINS_CA_CERT", ""), "PEM CA certificate to trust for an https -url (see: go run ./dev/certs)")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: seed [flags] [target]\n\n")
 		fmt.Fprintf(fs.Output(), "Targets: users, jobs (omit to seed everything)\n\n")
@@ -171,18 +173,29 @@ func main() {
 	}
 	onlyFilter = *onlyFlag
 
-	fmt.Printf("Connecting to Jenkins at %s...\n", *urlFlag)
-	jenkins := gojenkins.CreateJenkins(nil, *urlFlag, *userFlag, *passFlag)
-	_, err := jenkins.Init(ctx)
+	// Build the client the way the app does so seeding works against the TLS
+	// dev stack, whose certificate comes from a private CA.
+	httpClient, err := jenkinshttp.New(jenkinshttp.Options{CACertPath: *caFlag})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to connect to Jenkins: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to configure the HTTP client: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Connecting to Jenkins at %s...\n", *urlFlag)
+	jenkins := gojenkins.CreateJenkins(httpClient, *urlFlag, *userFlag, *passFlag)
+	if _, err := jenkins.Init(ctx); err != nil {
+		if explained, ok := jenkinshttp.Explain(err); ok {
+			fmt.Fprintf(os.Stderr, "Failed to connect to Jenkins: %s\n", explained)
+		} else {
+			fmt.Fprintf(os.Stderr, "Failed to connect to Jenkins: %v\n", err)
+		}
 		os.Exit(1)
 	}
 	fmt.Println("Connected.")
 
 	switch target {
 	case "users":
-		seedUsers(ctx, *urlFlag, *userFlag, *passFlag)
+		seedUsers(ctx, httpClient, *urlFlag, *userFlag, *passFlag)
 	case "jobs":
 		if err := seedFolders(ctx, jenkins); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -190,7 +203,7 @@ func main() {
 		}
 		seedJobs(ctx, jenkins)
 	default:
-		seedUsers(ctx, *urlFlag, *userFlag, *passFlag)
+		seedUsers(ctx, httpClient, *urlFlag, *userFlag, *passFlag)
 		if err := seedFolders(ctx, jenkins); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -201,9 +214,11 @@ func main() {
 	fmt.Println("\nSeed complete!")
 }
 
-func seedUsers(ctx context.Context, baseURL, user, pass string) {
+// seedUsers needs a session cookie, so it wraps the shared client's transport
+// in its own cookie jar rather than building a fresh untrusting client.
+func seedUsers(ctx context.Context, base *http.Client, baseURL, user, pass string) {
 	jar, _ := cookiejar.New(nil)
-	client := &http.Client{Jar: jar}
+	client := &http.Client{Transport: base.Transport, Jar: jar}
 
 	// Fetch crumb with a session cookie so /scriptText accepts the request.
 	crumbURL := baseURL + "/crumbIssuer/api/json"

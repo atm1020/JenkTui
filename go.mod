@@ -39,7 +39,7 @@ require (
 )
 
 require (
-	github.com/atm1020/gojenkins v1.2.0-jenktui.12
+	github.com/atm1020/gojenkins v1.2.0-jenktui.13
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/ultraviolet v0.0.0-20260525132238-948f4557a654 // indirect

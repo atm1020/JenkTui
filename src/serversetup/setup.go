@@ -4,20 +4,17 @@ package serversetup
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/atm1020/jenktui/src/config"
 	appcontext "github.com/atm1020/jenktui/src/context"
-	"github.com/atm1020/jenktui/src/jenkinsclient"
+	"github.com/atm1020/jenktui/src/jenkinshttp"
 )
 
 // Draft contains public connection settings and only a newly entered token.
@@ -52,24 +49,18 @@ func Verify(ctx context.Context, dir string, draft Draft) (*Verified, error) {
 	if err := config.ValidateServerConfig(&server); err != nil {
 		return nil, err
 	}
-	client := jenkinsclient.New(jenkinsclient.Options{})
-	defer jenkinsclient.CloseIdle(client)
-	// Do not follow redirects: they may send credentials to an unintended server.
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	if server.CACertPath != "" {
-		pem, err := os.ReadFile(server.CACertPath)
-		if err != nil {
-			return nil, errors.New("cannot read CA certificate; check the advanced setting")
-		}
-		roots, err := x509.SystemCertPool()
-		if err != nil {
-			roots = x509.NewCertPool()
-		}
-		if !roots.AppendCertsFromPEM(pem) {
+	// Build the client exactly as the running app does, so a connection that
+	// passes this test cannot fail on trust grounds once the server is saved.
+	client, err := jenkinshttp.New(jenkinshttp.Options{CACertPath: server.CACertPath})
+	if err != nil {
+		if errors.Is(err, jenkinshttp.ErrCANotPEM) {
 			return nil, errors.New("CA certificate is not valid PEM")
 		}
-		client.Transport.(*http.Transport).TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+		return nil, errors.New("cannot read CA certificate; check the advanced setting")
 	}
+	defer jenkinshttp.CloseIdle(client)
+	// Do not follow redirects: they may send credentials to an unintended server.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	// whoAmI prevents anonymous-readable Jenkins instances from accepting bad credentials.
@@ -90,17 +81,17 @@ func check(ctx context.Context, client *http.Client, server appcontext.ServerCon
 	req.SetBasicAuth(server.Username, server.APIToken)
 	resp, err := client.Do(req)
 	if err != nil {
-		var certErr *tls.CertificateVerificationError
 		switch {
 		case errors.Is(ctx.Err(), context.Canceled):
 			return errors.New("connection test canceled")
 		case errors.Is(ctx.Err(), context.DeadlineExceeded):
 			return errors.New("connection test timed out after five seconds")
-		case errors.As(err, &certErr):
-			return errors.New("TLS certificate verification failed; check the CA certificate")
-		default:
-			return errors.New("cannot connect to Jenkins; check the URL and network")
 		}
+		// Never return err itself: it carries the URL and the server's response.
+		if explained, ok := jenkinshttp.Explain(err); ok {
+			return errors.New(explained)
+		}
+		return errors.New("cannot connect to Jenkins; check the URL and network")
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {

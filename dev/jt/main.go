@@ -47,7 +47,10 @@ one isolated $HOME (config, runs.db, logs, cache) + one private tmux socket.
 Run "jt COMMAND --help" for details and examples.
 
 Env overrides:
-  JT_JENKINS_URL      (default http://127.0.0.1:8080, must be localhost)
+  JT_JENKINS_URL      (default http://127.0.0.1:8080, must be loopback; https allowed)
+  JT_CA_CERT          PEM CA certificate for an https JT_JENKINS_URL; written into
+                      server.json as ca_cert_path. Set up the TLS stack with:
+                      go run ./dev/certs && task jenkins:tls
   JT_JENKINS_USER     (default admin)    JT_JENKINS_TOKEN (default admin)
   JT_STATE_ROOT       (default ${TMPDIR:-/tmp}/jenktui-verify)  — deleted by down
   JT_EVIDENCE_ROOT    (default <repo>/dist/verify)              — survives down
@@ -184,6 +187,7 @@ func exampleOf(help string) string {
 type config struct {
 	repo         string
 	jenkinsURL   string
+	caCertPath   string
 	user         string
 	token        string
 	stateRoot    string
@@ -206,6 +210,7 @@ func loadConfig(ctx context.Context) (config, error) {
 	cfg := config{
 		repo:         repo,
 		jenkinsURL:   envOr("JT_JENKINS_URL", "http://127.0.0.1:8080"),
+		caCertPath:   os.Getenv("JT_CA_CERT"),
 		user:         envOr("JT_JENKINS_USER", "admin"),
 		token:        envOr("JT_JENKINS_TOKEN", "admin"),
 		stateRoot:    envOr("JT_STATE_ROOT", filepath.Join(os.TempDir(), "jenktui-verify")),
@@ -223,6 +228,16 @@ func loadConfig(ctx context.Context) (config, error) {
 	if !isLocalURL(cfg.jenkinsURL) {
 		return config{}, fmt.Errorf("JT_JENKINS_URL=%s is not local; refusing to drive a non-disposable Jenkins", cfg.jenkinsURL)
 	}
+	if cfg.caCertPath != "" {
+		if cfg.caCertPath, err = filepath.Abs(cfg.caCertPath); err != nil {
+			return config{}, fmt.Errorf("JT_CA_CERT: %w", err)
+		}
+		// The app reads this path itself, so a typo must fail here rather than
+		// as an unexplained TLS error inside the instance.
+		if _, err := os.Stat(cfg.caCertPath); err != nil {
+			return config{}, fmt.Errorf("JT_CA_CERT=%s is not readable: %w (generate it: go run ./dev/certs)", cfg.caCertPath, err)
+		}
+	}
 	if !json.Valid([]byte(cfg.configJSON)) {
 		return config{}, usageErr("JT_CONFIG_JSON is not valid JSON",
 			`JT_CONFIG_JSON='{"theme":"Nord","notification":{"desktop_enabled":false}}' jt up demo`)
@@ -230,8 +245,17 @@ func loadConfig(ctx context.Context) (config, error) {
 	return cfg, nil
 }
 
+// isLocalURL allows https so the TLS dev stack (task jenkins:tls) can be
+// driven, while still refusing anything that is not loopback.
 func isLocalURL(u string) bool {
-	return strings.HasPrefix(u, "http://127.0.0.1:") || strings.HasPrefix(u, "http://localhost:")
+	for _, scheme := range []string{"http://", "https://"} {
+		for _, host := range []string{"127.0.0.1:", "localhost:"} {
+			if strings.HasPrefix(u, scheme+host) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func envOr(key, def string) string {

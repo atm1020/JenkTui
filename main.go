@@ -60,7 +60,7 @@ func initApp(subdirs *config.Subdirs) *ui.App {
 		fmt.Fprintf(os.Stderr, "  - Check configuration file at ~/.config/JenkTui/server.json\n")
 		fmt.Fprintf(os.Stderr, "  - Verify JSON syntax is valid\n")
 		fmt.Fprintf(os.Stderr, "  - Ensure all required fields are present (jenkins_url, username, api_token)\n")
-		fmt.Fprintf(os.Stderr, "  - Verify ca_cert_path exists and is readable when configured\n\n")
+		fmt.Fprintf(os.Stderr, "  - Verify ca_cert_path points to a readable, PEM-encoded certificate when configured\n\n")
 		fmt.Fprintf(os.Stderr, "See ~/.local/share/JenkTui/logs/jenktui.log for more details.\n\n")
 		os.Exit(1)
 	}
