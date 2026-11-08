@@ -11,8 +11,9 @@ replay, or delete them.
   `Are you sure you want to trigger…`. `y` confirms, and `n`/`esc` cancel
   without side effects.
 - `trigger-toast`: a confirmed trigger shows `Build triggered` in the footer.
-- `trigger-live`: the new build appears at the top of the job page's
-  `Builds` column, with an animated spinner while it runs.
+- `trigger-live`: the new build appears in the job page's stage grid
+  with an animated spinner. The left Builds column can stay stale (see
+  [job-and-build.md](./job-and-build.md)); report that as a product issue.
 - `myruns-row`: `m` opens `My Runs`. The triggered run shows `In progress`,
   then its final status (`Success` for mobile-app) without a manual refresh.
 - `myruns-persist`: the run is a row in `runs.db` table `runs`
@@ -20,7 +21,8 @@ replay, or delete them.
   `trigger_intents`.
 - `myruns-actions`: Enter opens the build, `L` the log, `r` replay,
   `ctrl+b` re-trigger, `d` delete the row, `/` filter, `s`/`S` sort,
-  `t` cycle the status filter, and `R` reset.
+  `t` open the filter editor focused on Status (Up/Down selects), and
+  `R` reset.
 
 ## How to get to it (user POV)
 
@@ -58,8 +60,10 @@ Steps:
   - Run `$J keys RUN m && $J wait RUN 'My Runs' && $J wait RUN 'In progress' 30`.
   - Then run `$J snap RUN myruns-running`.
 - **Completion tracked.**
-  - Run `$J wait RUN 'completed: Success' 90`. mobile-app takes about 26s,
-    plus queue time and the 3s poll.
+  - Run `$J wait RUN 'completed: Success' 90` after observing `In progress`.
+    mobile-app takes about 26s, plus queue time and the 3s poll. If the run
+    was first observed already terminal, verify its terminal row and DB
+    instead: that initial observation does not generate a completion toast.
   - The same row now reads `#B+1   Success   <date>  ~29s`, and the footer
     toast reads `Build #B+1 completed: Success`.
   - Then run `$J snap RUN myruns-done`.
@@ -75,7 +79,8 @@ Steps:
     `building = false`.
 - **Cancel path (optional).**
   - On the job page, run `$J keys RUN C-b && $J wait RUN 'Are you sure' && $J keys RUN n`.
-  - No toast appears, and Jenkins `lastBuild.number` is unchanged.
+  - Expect `$J crumb RUN 'Build trigger aborted'`; Jenkins
+    `lastBuild.number` and the trigger-intent count remain unchanged.
 
 ## Gotchas
 
@@ -96,5 +101,5 @@ Steps:
 - Desktop completion notifications are off in the harness config. To verify
   them, start with
   `JT_CONFIG_JSON='{"poll_interval":3,"notification":{"desktop_enabled":true}}'`
-  and check that `completion_outbox.delivered_at` is set. A popup will appear
-  on the host.
+  and observe the host popup as well as `completion_outbox.delivered_at`.
+  A delivered DB acknowledgement alone does not prove desktop delivery.

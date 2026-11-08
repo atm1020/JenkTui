@@ -16,7 +16,9 @@ server in `runs.db` and survive restarts.
   `UPDATED`.
 - `fav-tabs`: `J`, `F`, and `M` switch to the Jobs, Folders, and
   Multibranch tabs.
-- `fav-open`: Enter on a row opens that job or folder. `r` opens its runs.
+- `fav-open`: Enter opens the selected job or container. `r` opens My
+  Runs filtered to a selected job; containers warn `Containers have no run
+  history`.
 - `fav-delete`: `d` removes the selected favorite.
 - `fav-search`: `/` filters the list.
 - `fav-persist`: favorites survive an app restart that keeps the same
@@ -34,9 +36,8 @@ server in `runs.db` and survive restarts.
 Preconditions:
 
 - The instance is freshly started (`$J up RUN`), so its `runs.db` has no
-  favorites. Check with `$J db RUN 'select count(*) from favorites'`; note
-  that the file appears only after the first store write. A fresh RUN may
-  say `no runs.db yet`, which also means zero favorites.
+  favorites. Check with `$J db RUN 'select count(*) from favorites'`.
+  Store initialization creates the database; no first favorite is needed.
 
 Steps:
 
@@ -59,6 +60,13 @@ Steps:
     `http://127.0.0.1:8080/job/DevTeam/job/Frontend/job/mobile-app/ | local | job`.
 - **Open from Favorites.**
   - Run `$J keys RUN Enter && $J wait RUN 'Health Score|No health report available'`.
+- **Persistence.**
+  - Before deleting, restart only this RUN's binary in the same HOME:
+    `tmux -L jtv-RUN respawn-pane -k -t jt env HOME=${TMPDIR:-/tmp}/jenktui-verify/RUN/home TERM=xterm-256color COLORTERM=truecolor ${TMPDIR:-/tmp}/jenktui-verify/RUN/jenktui`.
+    If `JT_STATE_ROOT` is set, substitute its RUN path instead.
+  - Wait for authenticated home, run `$J doctor RUN`, then `f` and wait
+    for `Jobs (1)`. Snap the retained favorite and query the DB again.
+    `down`/`up` cannot prove persistence: it replaces the sandbox.
 - **Delete.**
   - Run `$J keys RUN f && $J wait RUN 'Jobs \(1\)'`.
   - Then run `$J keys RUN d && $J wait RUN 'Jobs \(0\)'`.

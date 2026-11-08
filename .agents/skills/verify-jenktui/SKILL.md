@@ -34,7 +34,7 @@ Jenkins LTS on `127.0.0.1:8080` (admin/admin) with the seed data loaded:
 
 ```bash
 task jenkins:lts        # starts container jenkins-lts on 127.0.0.1:8080 (first boot ~1-2 min)
-task seed               # idempotent: folders DevTeam/Ops/QA/Dynamic + jobs (warnings for existing items are normal)
+task seed               # creates/updates seed folders and jobs; preserves build history
 ```
 
 Then start one instance:
@@ -70,12 +70,19 @@ Options:
   Jenkins) so the server selector has something to switch to.
 - `JT_JENKINS_URL=http://127.0.0.1:8081` with `task jenkins:2479` and
   `task seed:2479` targets Jenkins 2.479.
+- Private-CA HTTPS: run `task certs` and `task jenkins:tls`, then export
+  `JT_JENKINS_URL=https://localhost:8443` and
+  `JT_CA_CERT="$PWD/dev/docker/tls/ca.pem"` before `up`. Keep these exports
+  for `doctor` and `jenkins` too: those commands use the current environment,
+  not the RUN's saved connection. `JT_CA_CERT` becomes `ca_cert_path` in
+  the isolated server entry. See [server setup](features/server-selector.md).
 
-Teardown is `$J down demo`; see Cleanup.
+Run `$J doctor demo` before the first drive. Teardown is `$J down demo`; see Cleanup.
 
 ## Doctor
 
-Run this first whenever something looks wrong. It is read-only:
+Run before the first drive, after a restart, and after any failed drive.
+It is read-only:
 
 ```bash
 $J doctor demo
@@ -98,7 +105,8 @@ It also prints the build stamp (`git describe --dirty`) and the app's own
 
 If doctor fails on "pane runs our binary" or "process still running", the
 instance is not worth driving. Read `$J log demo 80` and `$J screen demo`, then
-run `down` and `up` again.
+run `down` and `up` again. If the process is healthy but the UI state is
+unexpected, reset to a known view or relaunch before continuing.
 
 ## Drive
 
@@ -111,16 +119,22 @@ run `down` and `up` again.
 | `$J screen RUN` | print the current screen |
 
 **Always wait for the next view before sending the next key. Never use
-`sleep` instead.** Data loads asynchronously, and keys sent too early are
-dropped or land on the previous view. Two traps the proof runs hit:
+`sleep` instead.** `wait` uses Go regular expressions over the entire screen;
+use `(?m)` if `^` or `$` must match individual lines. A header or breadcrumb
+under a dialog does not prove that dialog closed. Data loads asynchronously;
+keys sent too early are dropped or land on the previous view. Two traps the
+proof runs hit:
 
 - Dialogs draw over the old page, so the old page's text stays on screen. A
   plain `wait 'Health Score'` can match the page you just left. **Use
   `crumb` for the page identity**, then `wait` for page content.
 - The job page drops every key while it is loading, and its `Health Score`
-  header can render before loading finishes. The job page is ready only when
-  build boxes are drawn: `$J wait RUN '│ #[0-9]+ │'`. Folder pages are ready
-  at `N items`.
+  header can render before loading finishes. For a job with builds, wait
+  for build boxes: `$J wait RUN '│ #[0-9]+ │'`. A never-built job instead
+  becomes ready at `No pipeline runs found`. Folder pages are ready at
+  `N items`. The build page also drops keys during loading: after its
+  breadcrumb/header, wait for loaded content such as `Stage ID:` on a
+  completed pipeline before sending actions.
 
 The canonical "open a job" sequence:
 
@@ -145,7 +159,8 @@ Stable handles to wait on:
   `Loaded: a-b/N | Line: x | Scroll: y%` (log viewer), `Jobs (n)   Folders (n)`
   (Favorites), `My Runs`.
 
-Default keys (from `getDefaultKeyMapConfig` in `src/config/loader.go`):
+Default keys (from `getDefaultKeyMapConfig` in `src/config/loader.go`;
+active dialogs and text-input modes can intercept global keys):
 
 - **Global:** `ctrl+p` search, `b` back, `]` forward, `m` My Runs,
   `f` Favorites, `ctrl+s` server, `ctrl+t` theme, `?` help, `ctrl+c` quit

@@ -18,12 +18,13 @@ and its stages, each with a status and duration.
 - `build-open`: Enter opens `Build #N` with `Started`, `Duration`,
   `Status`, `Started by`, `Details`, `Node`, and `Artifacts`.
 - `build-stages`: on the build page, `h`/`l` move the highlighted stage
-  (drawn with a double border). `ctrl+l` opens that stage's step log.
-- `build-step-log`: `ctrl+l` opens the selected stage's step log. It
-  shows only that stage's output, and the footer **stays** at
+  (drawn with a double border); `j`/`k` select a step in its details.
+- `build-step-log`: `ctrl+l` opens the selected flow step's log, not
+  necessarily all output from that stage. The footer **stays** at
   `…mobile-app  N` (no `console`).
 - `build-help`: `?` expands the footer into the full key list for the page.
-- `build-params`: `P` shows the build parameters (parameterized jobs only).
+- `build-params`: `P` shows build parameters, or `No parameters used for
+  this build` when empty.
 
 ## How to get to it (user POV)
 
@@ -38,7 +39,7 @@ and its stages, each with a status and duration.
 Preconditions:
 
 - The instance is ready. `DevTeam/Frontend/mobile-app` has at least one
-  completed build. Check with
+  completed build (two to verify selection movement). Check with
   `$J jenkins RUN '/job/DevTeam/job/Frontend/job/mobile-app/api/json?tree=lastCompletedBuild[number]'`.
 
 Steps:
@@ -53,29 +54,34 @@ Steps:
   - Run `$J screen RUN | grep -E 'Checkout|Unit Tests'`.
   - Stage names appear in the grid.
 - **Move the selection.**
-  - Run `$J keys RUN j && sleep 0.5`. There is no stable text to wait on
-    here; this is the one place a short sleep is acceptable.
+  - Run `$J keys RUN j`, then capture `$J snap RUN job-selection` and
+    inspect the ANSI selection against the preceding snapshot.
   - The selected build changes to the second-newest build. Its date and
     duration lines appear next to it.
 - **Open the build.**
   - Run `$J keys RUN Enter && $J crumb RUN 'mobile-app.*<N>' && $J wait RUN 'Build #<N>'`.
-  - The page shows `Status: Success` (or the build's real result), and the
-    footer ends with that build number.
+  - Wait for loaded details (`$J wait RUN 'Stage ID:'` on this completed
+    pipeline) before further keys. The header alone can precede readiness.
+    Capture `$J snap RUN build-page` while on the build page.
 - **Move between stages.**
   - Run `$J keys RUN l`.
   - The double-bordered box moves from `Checkout` to `Dependencies`.
 - **Switch stage and open its step log at once.**
-  - From the build page with `Checkout` selected, run
-    `$J keys RUN l C-l && $J wait RUN 'Loaded:'`. Both keys go in one
-    send, before the new stage's details arrive from Jenkins.
+  - First restore Checkout with `h` and wait for its details (for this
+    fixture, `Stage ID: 6`). Then send `$J keys RUN l C-l` together.
+    If the footer reports `Loading Dependencies stage…`, wait for the
+    new details and press `C-l` again, then `$J wait RUN 'Loaded:'`.
   - The log shows the **Dependencies** output (`Installing pods/gradle deps...`),
     never Checkout's (`Checking out source...`). If you press `ctrl+l` before
     the details have loaded, the footer may first say
     `Loading Dependencies stage…`; press it again. Then run `b` and `h` to
-    return to Checkout. This guards #119.
+    return to Checkout. Explicitly select the intended flow step before
+    asserting its output. This guards #119.
 - **Step log.**
-  - Run `$J keys RUN C-l && $J wait RUN 'Loaded:'`.
-  - The screen shows the Dependencies stage output
+  - Select Dependencies with `l`, wait for its details (`Stage ID: 12`
+    for this fixture), and select its `Print Message` step with `j`/`k`.
+    Run `$J keys RUN C-l && $J wait RUN 'Loaded:'`.
+  - The screen shows that step's Dependencies output
     (`Installing pods/gradle deps...`). Cross-check with
     `$J jenkins RUN '/job/DevTeam/job/Frontend/job/mobile-app/<N>/consoleText' | grep -c 'Installing pods'`.
   - Then run `$J keys RUN b && $J wait RUN 'Build #<N>'`.
@@ -86,7 +92,8 @@ Steps:
 - **Back to the job.**
   - Run `$J keys RUN b && $J wait RUN 'Health Score|No health report available'`.
 - **Proof.**
-  - Run `$J snap RUN job-page` and `$J snap RUN build-page`.
+  - Run `$J snap RUN job-page` on the job page; retain the earlier
+    `build-page` snap from the actual build page.
   - Cross-check the build's real result with
     `$J jenkins RUN '/job/DevTeam/job/Frontend/job/mobile-app/<N>/api/json?tree=result,duration'`.
 
