@@ -68,6 +68,7 @@ type Completion struct {
 
 type PollFailure struct {
 	Target      Target
+	Generation  uint64
 	At          time.Time
 	Err         error
 	Occurrences uint64

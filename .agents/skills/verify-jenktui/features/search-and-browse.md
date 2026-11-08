@@ -11,11 +11,13 @@ listing, and `b` walks back through navigation history.
   `N item(s)`, a leaf name, and a parent `»` breadcrumb on the next line;
   no URL is displayed.
 - `search-clear`: `ctrl+r` clears the input.
-- `search-open-job`: Enter on a job result opens its job page.
+- `search-open-job`: Enter on a job result opens its loading page immediately,
+  even when the result's class is unresolved. Unsupported kinds show the
+  existing navigation notice in-page with a Back-key hint.
 - `search-open-folder`: Enter on a folder result opens the folder listing,
   with columns `TYPE NAME STATUS W LAST SUCCESS LAST FAILURE LAST DURATION`.
 - `browse-folder`: in a folder, `j`/`k` move the selection, and Enter opens
-  the selected child.
+  the selected child, including a loading state for known pipelines.
 - `nav-back`: `b` returns to the previous view. `]` goes forward again.
 
 ## How to get to it (user POV)
@@ -45,8 +47,7 @@ Steps:
     build boxes are drawn, which means the page is ready for keys.
 - **Search for a folder.**
   - Run `$J keys RUN C-p && $J wait RUN 'Global Search'`.
-  - Then run `$J type RUN Backend && $J keys RUN Enter && $J wait RUN '‣ .*Backend'`.
-    The parent breadcrumb is `DevTeam`, separate from the leaf name.
+  - Then run `$J keys RUN C-r && $J wait RUN 'Global Search' && $J type RUN Backend && $J keys RUN Enter && $J wait RUN '‣ .*Backend'`.
 - **Open the folder.**
   - Run `$J keys RUN Enter && $J crumb RUN 'DevTeam.*Backend' && $J wait RUN '[0-9]+ items'`.
   - The listing shows `ansi-color-log`, `api-service`, `log-heavy-job`, and
@@ -75,9 +76,14 @@ Steps:
   closes only the dialog. If no dialog is open, `ctrl+c` quits the app.
 - Back history keeps only 3 views. After a longer path, `b` stops short of
   home.
-- Reopening with `ctrl+p` creates a fresh, empty dialog. To clear a query
-  within the same dialog, focus the input (`Tab` from results), then press
-  `ctrl+r`.
+- The dialog keeps the previous query. Press `ctrl+r` before typing a new
+  one, or the new text is appended to the old.
+- Opening a pipeline or unknown-kind target first shows `Loading job...`, without job-page
+  chrome. The breadcrumb identifies the destination, not readiness; keep
+  waiting for build boxes before sending job keys. The spinner can be too
+  brief to capture on local Jenkins, so do not require it as a wait handle.
+- Legacy HTML suggestions still need URL resolution before emitting a
+  target; this change removes classification after resolution, not that lookup.
 - Results come from Jenkins's search API, so a short query such as `app`
   can return many pages (`h`/`l` change page). Use exact seed names.
 - The search box starts focused. Once results are shown, `j`/`k` move the

@@ -51,6 +51,19 @@ func nextExecution(t *testing.T, executor *controlledExecutor) *controlledExecut
 	}
 }
 
+// finishWork completes one execution and returns once the scheduler has
+// applied the result, so a following advance measures from the recorded
+// completion instead of racing it.
+func finishWork(t *testing.T, clock *fakeClock, call *controlledExecution, err error) {
+	t.Helper()
+	mark := clock.iteration()
+	call.finish <- err
+	clock.waitIteration(t, mark+1)
+}
+
+// assertNoExecution fails if work reaches the executor within wait. Under a
+// fakeClock the wait is only a grace period for a wrongly dispatched worker to
+// surface, because frozen time cannot make a poll due on its own.
 func assertNoExecution(t *testing.T, executor *controlledExecutor, wait time.Duration) {
 	t.Helper()
 	select {
@@ -186,11 +199,13 @@ func TestReacquiredTargetIsNotDelayedByStaleWork(t *testing.T) {
 
 func TestSchedulerCadenceStartsAfterWorkCompletes(t *testing.T) {
 	executor := newControlledExecutor()
+	clock := newFakeClock()
 	manager := newManager(Config{
 		PollInterval:    120 * time.Millisecond,
 		MaxParallelJobs: 1,
 		RequestTimeout:  time.Second,
 	}, executor)
+	manager.clock = clock
 	manager.Start()
 	t.Cleanup(manager.Stop)
 
@@ -203,10 +218,15 @@ func TestSchedulerCadenceStartsAfterWorkCompletes(t *testing.T) {
 	t.Cleanup(watch.Release)
 
 	first := nextExecution(t, executor)
-	time.Sleep(150 * time.Millisecond)
-	first.finish <- nil
+	// The poll outlives one interval, so cadence measured from dispatch would
+	// make the next one due the moment this one completes.
+	clock.advance(t, 150*time.Millisecond)
+	finishWork(t, clock, first, nil)
 
-	assertNoExecution(t, executor, 60*time.Millisecond)
+	clock.advance(t, 119*time.Millisecond)
+	assertNoExecution(t, executor, 20*time.Millisecond)
+
+	clock.advance(t, time.Millisecond)
 	second := nextExecution(t, executor)
 	second.finish <- nil
 }
@@ -236,6 +256,7 @@ func TestSchedulerRemovesReleasedDemand(t *testing.T) {
 
 func TestSchedulerUsesBoundedFailureBackoff(t *testing.T) {
 	executor := newControlledExecutor()
+	clock := newFakeClock()
 	manager := newManager(Config{
 		PollInterval:    time.Hour,
 		MaxParallelJobs: 1,
@@ -243,6 +264,7 @@ func TestSchedulerUsesBoundedFailureBackoff(t *testing.T) {
 		RetryBase:       20 * time.Millisecond,
 		RetryMax:        60 * time.Millisecond,
 	}, executor)
+	manager.clock = clock
 	manager.Start()
 	t.Cleanup(manager.Stop)
 
@@ -254,25 +276,24 @@ func TestSchedulerUsesBoundedFailureBackoff(t *testing.T) {
 	}
 	t.Cleanup(watch.Release)
 
-	first := nextExecution(t, executor)
-	first.finish <- errors.New("first failure")
-	assertNoExecution(t, executor, 10*time.Millisecond)
+	// Retries are due after RetryBase, then double to 40ms, then stay capped
+	// at RetryMax for every later attempt.
+	for _, delay := range []time.Duration{
+		20 * time.Millisecond,
+		40 * time.Millisecond,
+		60 * time.Millisecond,
+		60 * time.Millisecond,
+	} {
+		call := nextExecution(t, executor)
+		finishWork(t, clock, call, errors.New("poll failure"))
 
-	second := nextExecution(t, executor)
-	second.finish <- errors.New("second failure")
-	assertNoExecution(t, executor, 25*time.Millisecond)
-
-	third := nextExecution(t, executor)
-	third.finish <- errors.New("third failure")
-	fourth := nextExecution(t, executor)
-	fourth.finish <- errors.New("fourth failure")
-
-	select {
-	case fifth := <-executor.calls:
-		fifth.finish <- nil
-	case <-time.After(120 * time.Millisecond):
-		t.Fatal("failure retry exceeded configured maximum backoff")
+		clock.advance(t, delay-time.Millisecond)
+		assertNoExecution(t, executor, 20*time.Millisecond)
+		clock.advance(t, time.Millisecond)
 	}
+
+	last := nextExecution(t, executor)
+	last.finish <- nil
 }
 
 func TestSchedulerAppliesRequestTimeout(t *testing.T) {

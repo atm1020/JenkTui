@@ -600,7 +600,7 @@ func (m *Model) handleKeyPressMsgStageView(msg tea.KeyPressMsg) tea.Cmd {
 	}
 
 	if key.Matches(msg, m.keyMap.TriggerBuild) {
-		return m.paramsRequest.Fetch(m.ctx, m.pipelineRun.Job)
+		return m.paramsRequest.Fetch(m.pipelineRun.Job)
 	}
 
 	if key.Matches(msg, m.keyMap.CancelBuild) {

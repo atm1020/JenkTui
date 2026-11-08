@@ -296,6 +296,12 @@ var (
 	_ pollSnapshotConsumer = (*build.Model)(nil)
 )
 
+type pollFailureConsumer interface {
+	ApplyPollFailure(poll.PollFailure) tea.Cmd
+}
+
+var _ pollFailureConsumer = (*job.Model)(nil)
+
 type pollRunsChangedConsumer interface {
 	PollRunsChanged() tea.Cmd
 }
@@ -364,7 +370,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case util.OpenDialogMsg:
 		return a, a.handleOpenDialog(msg)
 	case util.CloseDialogMsg:
-		return a, a.handleCloseDialog()
+		return a, a.handleCloseDialog(msg)
 	case serverselector.SelectedMsg:
 		return a, a.selectServer(msg.Server)
 	case serverselector.SetupMsg:
@@ -391,6 +397,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case util.OpenJobTargetMsg:
 		return a, util.HandleJobTarget(msg.Target, a.ctx)
 	case util.OpenJobComponentMsg:
+		if msg.Job == nil {
+			model := job.NewModelFromUrl(a.ctx, a.wWidth, a.wHeight, msg.URL)
+			model.SetNavigationName(msg.Name)
+			return a, a.navigateTo(model)
+		}
 		return a, a.navigateTo(job.NewModel(a.ctx, a.wWidth, a.wHeight, msg.Job))
 	case util.BrowserOpenMsg:
 		return a, util.Open(msg.Url)
@@ -401,7 +412,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case buildaction.OpenLogMsg:
 		return a, a.handleOpenLog(msg)
 	case util.OpenJobFolderMsg:
-		return a, a.navigateTo(folder.NewModel(a.ctx, a.wWidth, a.wHeight, msg.Target, msg.Job))
+		return a, a.handleOpenJobFolder(msg)
 	case build.OpenBuildMsg:
 		return a, a.handleOpenBuild(msg)
 	case build.LoadFailedMsg:
@@ -462,6 +473,10 @@ func (a *App) View() tea.View {
 		row := 2 // Position near top of window
 
 		layers = append(layers, lipgloss.NewLayer(dialogView).X(col).Y(row))
+		if chrome := a.bottomChrome(); chrome != "" && a.maxHeight > 0 {
+			h := lipgloss.Height(chrome)
+			layers = append(layers, lipgloss.NewLayer(chrome).X(0).Y(max(0, a.maxHeight-h)))
+		}
 	}
 
 	comp := lipgloss.NewCompositor(layers...)
@@ -472,8 +487,32 @@ func (a *App) View() tea.View {
 	// BgBase for the session, so unstyled cells render on the theme surface
 	// without any per-cell painting (same model as Charm's crush).
 	view.BackgroundColor = t.BgBase
-	view.Content = comp.Render()
+	view.Content = clipToWindow(comp.Render(), a.maxHeight)
 	return view
+}
+
+// clipToWindow keeps a tall dialog from painting past the terminal.
+func clipToWindow(content string, lines int) string {
+	if lines <= 0 {
+		return content
+	}
+	parts := strings.Split(content, "\n")
+	if len(parts) <= lines {
+		return content
+	}
+	return strings.Join(parts[:lines], "\n")
+}
+
+// bottomChrome is redrawn above dialogs so they cannot cover the footer.
+func (a *App) bottomChrome() string {
+	if a.footer == nil {
+		return ""
+	}
+	chrome := a.footer.View()
+	if a.helpLevel != HelpHidden {
+		chrome = lipgloss.JoinVertical(lipgloss.Left, chrome, a.help.View(a.helpKeyMap()))
+	}
+	return chrome
 }
 
 func (a *App) handleOpenDialog(msg util.OpenDialogMsg) tea.Cmd {
@@ -481,7 +520,10 @@ func (a *App) handleOpenDialog(msg util.OpenDialogMsg) tea.Cmd {
 	return tea.Batch(cleanup, a.dialog.Init())
 }
 
-func (a *App) handleCloseDialog() tea.Cmd {
+func (a *App) handleCloseDialog(msg util.CloseDialogMsg) tea.Cmd {
+	if msg.Dialog != nil && msg.Dialog != a.dialog {
+		return nil
+	}
 	_, wasServerSelector := a.dialog.(*serverselector.Dialog)
 	cleanup := a.replaceDialog(nil)
 	if wasServerSelector && a.ctx.PollManager == nil {
@@ -573,6 +615,22 @@ func (a *App) handleError(msg util.ErrorMsg) tea.Cmd {
 	// Show error as a dialog overlay.
 	cleanup := a.replaceDialog(errorpage.NewModel(msg.Error, msg.Title, a.wWidth, a.wHeight))
 	return tea.Batch(cleanup, a.dialog.Init())
+}
+
+func (a *App) handleOpenJobFolder(msg util.OpenJobFolderMsg) tea.Cmd {
+	model := folder.NewModel(a.ctx, a.wWidth, a.wHeight, msg.Target, msg.Job)
+	if !msg.ReplaceCurrent {
+		return a.navigateTo(model)
+	}
+	current, ok := a.router.CurrentView().(*job.Model)
+	if !ok || current.ID() != job.ViewID(msg.Target.URL) {
+		return nil // The user left before the redirect was delivered.
+	}
+	// Classification corrected a stale pipeline hint. Replace the loading
+	// page without pushing it onto Back, preserving the original caller.
+	cleanup := current.CleanUp()
+	a.router.SetInitialView(model)
+	return tea.Batch(cleanup, model.UpdateFooter(), model.Init())
 }
 
 func (a *App) navigateTo(model util.JenkTuiModel) tea.Cmd {
@@ -744,6 +802,9 @@ func (a *App) handlePollDelivery(msg pollDeliveryMsg) tea.Cmd {
 		}
 	}
 	for _, failure := range msg.delivery.Batch.Failures {
+		if consumer, ok := currentView.(pollFailureConsumer); ok {
+			cmds = append(cmds, consumer.ApplyPollFailure(failure))
+		}
 		log.Warn("poll target failed", "jobURL", failure.Target.JobURL, "buildID", failure.Target.BuildNumber.BuildID(),
 			"occurrences", failure.Occurrences, "error", failure.Err)
 	}

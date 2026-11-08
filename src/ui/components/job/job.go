@@ -36,23 +36,30 @@ const (
 )
 
 type Model struct {
-	activeView        ActiveView
-	wWidth, wHeight   int
-	ctx               *context.ProgramContext
-	keyMap            *CommonKeyMap
-	job               *gojenkins.Job
-	jobUrl            string
-	loading           bool
-	loadingSpinner    spinner.Model
-	pipelineRuns      []gojenkins.PipelineRun
-	isBuildInProgress bool
-	isFavorite        bool
-	stageView         *StageViewModel
-	jobList           *BuildListModel
-	frame             pageFrame
-	spinnerModel      spinner.Model
-	animating         bool
-	clock             animation.FrameClock
+	activeView         ActiveView
+	wWidth, wHeight    int
+	ctx                *context.ProgramContext
+	keyMap             *CommonKeyMap
+	job                *gojenkins.Job
+	jobUrl             string
+	navigationName     string
+	unsupportedMessage string
+	loading            bool
+	jobLoaded          bool
+	runsLoaded         bool
+	lastSnapshotAt     time.Time
+	lastFailureAt      time.Time
+	runsError          string
+	loadingSpinner     spinner.Model
+	pipelineRuns       []gojenkins.PipelineRun
+	isBuildInProgress  bool
+	isFavorite         bool
+	stageView          *StageViewModel
+	jobList            *BuildListModel
+	frame              pageFrame
+	spinnerModel       spinner.Model
+	animating          bool
+	clock              animation.FrameClock
 	// entered is true between Init and CleanUp. Only an entered page is on
 	// screen, so late messages cannot start the clock on any other.
 	entered           bool
@@ -111,12 +118,26 @@ func NewModelFromUrl(ctx *context.ProgramContext, width, height int, url string)
 	}
 }
 
+// SetNavigationName preserves the caller's label for unsupported-kind feedback.
+func (m *Model) SetNavigationName(name string) {
+	m.navigationName = name
+}
+
 func (m *Model) Init() tea.Cmd {
+	m.unsupportedMessage = ""
 	m.loading = true
+	m.jobLoaded = false
+	m.runsLoaded = false
+	m.lastSnapshotAt = time.Time{}
+	m.lastFailureAt = time.Time{}
+	m.runsError = ""
 	m.entered = true
+	// Acquire before choosing the fetch path: replay can supply runs now,
+	// while a missing/failed watch requires the standalone runs fetch.
+	watchCmd := m.watchJobWindow()
 	return tea.Batch(
 		m.fetchJob(),
-		m.watchJobWindow(),
+		watchCmd,
 		m.ensureAnimation(),
 	)
 }
@@ -129,6 +150,12 @@ func (m *Model) Update(msg tea.Msg) (util.JenkTuiModel, tea.Cmd) {
 }
 
 func (m *Model) View() string {
+	if m.unsupportedMessage != "" {
+		return m.renderNotice(m.unsupportedMessage)
+	}
+	if m.runsError != "" {
+		return m.renderNotice(m.runsError)
+	}
 	if m.loading && m.job == nil {
 		return m.renderLoading()
 	}
@@ -139,9 +166,15 @@ func (m *Model) View() string {
 }
 
 func (m *Model) ID() string {
-	id := "job:" + jobref.ToDisplayName(m.jobUrl)
+	id := ViewID(m.jobUrl)
 	log.Debug("job: ID()", "jobUrl", m.jobUrl, "id", id)
 	return id
+}
+
+// ViewID is the router identity of the job page for a job URL, so the shell can
+// recognise the page a late redirect belongs to without rebuilding the ID.
+func ViewID(jobURL string) string {
+	return "job:" + jobref.ToDisplayName(jobURL)
 }
 
 func (m *Model) UpdateFooter() tea.Cmd {
@@ -154,6 +187,7 @@ func (m *Model) UpdateFooter() tea.Cmd {
 func (m *Model) CleanUp() tea.Cmd {
 	m.frame = pageFrame{}
 	m.cancelInFlightRequest()
+	m.requestGeneration++
 	m.paramsRequest.Invalidate()
 	m.entered = false
 	m.stopAnimation()
@@ -229,22 +263,50 @@ func (m *Model) handleJobLoadedMsg(msg JobLoadedMsg) tea.Cmd {
 		}
 		return util.CmdHandler(util.ErrorMsg{Error: msg.Error, Title: msg.ErrorTitle})
 	}
+	if msg.UnsupportedMessage != "" {
+		return m.handleUnsupported(msg.UnsupportedMessage)
+	}
 	if msg.RedirectTarget != nil {
-		return util.CmdHandler(util.OpenJobFolderMsg{Target: *msg.RedirectTarget, Job: msg.Job})
+		return util.CmdHandler(util.OpenJobFolderMsg{Target: *msg.RedirectTarget, Job: msg.Job, ReplaceCurrent: true})
 	}
 
 	m.job = msg.Job
-	m.stageView.SetPipelineRun(msg.PipelineRuns)
+	m.jobLoaded = true
 	m.jobList.setItems(m.job.GetDetails().Builds)
-	m.isBuildInProgress = msg.HasInProgressBuild
-	m.stageView.hasInProgress = msg.HasInProgressBuild
-	m.loading = false
+	if m.pollWatch == nil {
+		m.runsLoaded = true
+		m.pipelineRuns = msg.PipelineRuns
+		m.stageView.SetPipelineRun(msg.PipelineRuns)
+		m.isBuildInProgress = msg.HasInProgressBuild
+		m.stageView.hasInProgress = msg.HasInProgressBuild
+	} else {
+		// A replay/delivery may precede the job record. Bind its runs to the
+		// complete destination job without replacing newer poll state.
+		for i := range m.pipelineRuns {
+			m.pipelineRuns[i].Job = m.job
+			m.pipelineRuns[i].Base = m.job.Base + "/" + m.pipelineRuns[i].ID
+		}
+		m.stageView.SetPipelineRun(m.pipelineRuns)
+	}
+	m.loading = !m.runsLoaded && m.runsError == ""
 	m.isFavorite = msg.IsFavorite
 	return nil
 }
 
+func (m *Model) handleUnsupported(message string) tea.Cmd {
+	m.unsupportedMessage = message
+	m.loading = false
+	m.isBuildInProgress = false
+	m.stageView.SetPipelineRun(nil)
+	if m.pollWatch != nil {
+		m.pollWatch.Release()
+		m.pollWatch = nil
+	}
+	return nil
+}
+
 func (m *Model) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
-	if m.loading {
+	if m.loading || m.unsupportedMessage != "" || m.runsError != "" {
 		return nil
 	}
 
@@ -310,8 +372,10 @@ func (m *Model) fetchJob() tea.Cmd {
 	m.requestGeneration++
 	generation := m.requestGeneration
 	jobURL := m.jobUrl
+	navigationName := m.navigationName
 	jenkins := m.ctx.Jenkins
 	runStore := m.ctx.RunStore
+	fetchRuns := m.pollWatch == nil
 
 	return func() tea.Msg {
 		id, parentIds := jobref.ToIDAndParents(jobURL)
@@ -319,12 +383,24 @@ func (m *Model) fetchJob() tea.Cmd {
 		if err != nil {
 			return JobLoadedMsg{Generation: generation, Error: err, ErrorTitle: "Could not open job — it may have been deleted"}
 		}
-		if target := util.TargetFromJob(jenkins, j); target.Kind.IsContainer() {
+		target := util.TargetFromJob(jenkins, j)
+		if target.Kind.IsContainer() {
 			return JobLoadedMsg{Generation: generation, Job: j, RedirectTarget: &target}
 		}
-		runs, err := j.GetPipelineRuns(requestCtx)
-		if err != nil {
-			return JobLoadedMsg{Generation: generation, Error: err, ErrorTitle: fmt.Sprintf("Could not load pipeline runs: %s", id)}
+		if target.Kind != jobref.KindPipeline {
+			// Keep the caller's name when available; otherwise retain the
+			// resolved name/URL fallback used by navigation before first paint.
+			if strings.TrimSpace(navigationName) != "" {
+				target = jobref.Target{URL: jobURL, Name: navigationName}
+			}
+			return JobLoadedMsg{Generation: generation, UnsupportedMessage: util.UnsupportedNavigationMessage(target)}
+		}
+		var runs []gojenkins.PipelineRun
+		if fetchRuns {
+			runs, err = j.GetPipelineRunsWithOptions(requestCtx, &gojenkins.PipelineRunsOptions{FullStages: true})
+			if err != nil {
+				return JobLoadedMsg{Generation: generation, Error: err, ErrorTitle: fmt.Sprintf("Could not load pipeline runs: %s", id)}
+			}
 		}
 		isFavorite := false
 		if runStore != nil {
@@ -409,6 +485,13 @@ func (m *Model) renderLoading() string {
 	return lipgloss.Place(m.wWidth, m.wHeight, lipgloss.Center, lipgloss.Center, content, lipgloss.WithWhitespaceStyle(base))
 }
 
+func (m *Model) renderNotice(message string) string {
+	base := styles.GetTheme().S().Base
+	back := m.ctx.Config.KeyMapConfig.Global.Back.HelpText()
+	content := base.Render(message + "\n\n" + back + ": Back returns to the previous page")
+	return lipgloss.Place(m.wWidth, m.wHeight, lipgloss.Center, lipgloss.Center, content, lipgloss.WithWhitespaceStyle(base))
+}
+
 func (m *Model) renderPanelLoading(width, height int) string {
 	base := styles.GetTheme().S().Base
 	content := base.Render(fmt.Sprintf("%s Loading...", m.loadingSpinner.View()))
@@ -435,13 +518,41 @@ func (m *Model) watchJobWindow() tea.Cmd {
 
 // ApplyPollSnapshot applies typed state routed by the app shell.
 func (m *Model) ApplyPollSnapshot(snapshot poll.Snapshot) tea.Cmd {
-	if m.pollWatch == nil || !m.pollWatch.Matches(snapshot) {
+	if m.pollWatch == nil || !m.pollWatch.Matches(snapshot) || m.observedBefore(snapshot.ObservedAt) {
 		return nil
 	}
+	m.lastSnapshotAt = snapshot.ObservedAt
+	// Runs — even an empty set — are only one of the two loading prerequisites,
+	// and a success clears startup failure feedback so a retry can recover.
+	m.runsLoaded = true
+	m.runsError = ""
+	m.loading = !m.jobLoaded
 	return m.applySnapshotData(
 		m.pipelineRunsFromSnapshots(snapshot.Runs),
 		hasActiveRun(snapshot.Runs),
 	)
+}
+
+// ApplyPollFailure receives typed failures from the shell's single delivery
+// consumer. Only startup needs an error page; background refresh failures keep
+// already usable runs on screen. Retain the watch so retries can recover.
+func (m *Model) ApplyPollFailure(failure poll.PollFailure) tea.Cmd {
+	identity := poll.Snapshot{Target: failure.Target, Generation: failure.Generation}
+	if m.pollWatch == nil || !m.pollWatch.Matches(identity) || m.runsLoaded || failure.Err == nil ||
+		m.observedBefore(failure.At) {
+		return nil
+	}
+	m.lastFailureAt = failure.At
+	id, _ := jobref.ToIDAndParents(m.jobUrl)
+	m.runsError = fmt.Sprintf("Could not load pipeline runs: %s\n\n%s", id, failure.Err)
+	m.loading = false
+	return m.ensureAnimation()
+}
+
+// observedBefore reports whether an observation predates the newest poll state
+// this page has already applied.
+func (m *Model) observedBefore(at time.Time) bool {
+	return at.Before(m.lastSnapshotAt) || at.Before(m.lastFailureAt)
 }
 
 func hasActiveRun(runs []poll.RunSnapshot) bool {
@@ -489,6 +600,7 @@ func (m *Model) pipelineRunsFromSnapshots(snapshots []poll.RunSnapshot) []gojenk
 }
 
 func (m *Model) applySnapshotData(runs []gojenkins.PipelineRun, hasInProgress bool) tea.Cmd {
+	m.pipelineRuns = runs
 	m.stageView.SetPipelineRun(runs)
 
 	if m.job != nil {
@@ -550,7 +662,7 @@ func (m *Model) handleCancelBuild() tea.Cmd {
 }
 
 func (m *Model) handleTriggerBuild() tea.Cmd {
-	return m.paramsRequest.Fetch(m.ctx, m.job)
+	return m.paramsRequest.Fetch(m.job)
 }
 
 func (m *Model) toggleFavorite() tea.Cmd {

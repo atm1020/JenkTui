@@ -35,84 +35,23 @@ func testProgram(api *pocApi.Jenkins) *appcontext.ProgramContext {
 	return &appcontext.ProgramContext{Jenkins: api}
 }
 
-// TestHandleJobTarget_ClassifiesUnknownBeforeOpening covers the bug where
-// opening a job by URL alone (global search, My Runs — neither of which
-// carries a resolved class) must classify the target before deciding which
-// view to open. An earlier version of this flow in ui.go skipped
-// classification and always opened the pipeline job view, relying on that
-// view's Init() to notice the mismatch and self-redirect — which left a
-// throwaway entry in the router's back stack that reappeared (and
-// re-redirected) on every later Back press, making Back look like it just
-// reloaded the current page instead of going back.
-func TestHandleJobTarget_ClassifiesUnknownBeforeOpening(t *testing.T) {
+// Unknown URLs from My Runs and search must paint before classification, so
+// the class the server would report cannot matter here. The destination then
+// classifies and, for a container, replaces itself without leaving a throwaway
+// page on Back; TestUnknownContainerRedirectReplacesHistory in
+// job/unknown_navigation_test.go guards that through the real shell.
+func TestHandleJobTarget_UnknownOpensBeforeClassification(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		class   string
-		wantMsg string // "folder" or "component"
-	}{
-		{
-			name:    "multibranch_pipeline_opens_as_folder",
-			class:   "org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject",
-			wantMsg: "folder",
-		},
-		{
-			name:    "plain_folder_opens_as_folder",
-			class:   "com.cloudbees.hudson.plugins.folder.Folder",
-			wantMsg: "folder",
-		},
-		{
-			name:    "organization_folder_opens_as_folder",
-			class:   "jenkins.branch.OrganizationFolder",
-			wantMsg: "folder",
-		},
-		{
-			name:    "pipeline_job_opens_as_component",
-			class:   "org.jenkinsci.plugins.workflow.job.WorkflowJob",
-			wantMsg: "component",
-		},
+	api, requests := classServer(t, "com.cloudbees.hudson.plugins.folder.Folder")
+	target := jobref.Target{URL: api.Server + "/job/target/", Name: "caller label"}
+	msg := HandleJobTarget(target, testProgram(api))()
+	open, ok := msg.(OpenJobComponentMsg)
+	if !ok || open.Job != nil || open.URL != target.URL || open.Name != target.Name {
+		t.Fatalf("message = %#v, want URL-only destination preserving caller name", msg)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			api, requests := classServer(t, tt.class)
-			cmd := HandleJobTarget(jobref.Target{URL: api.Server + "/job/target/"}, testProgram(api))
-			if cmd == nil {
-				t.Fatal("HandleJobTarget returned a nil cmd")
-			}
-
-			msg := cmd()
-			switch m := msg.(type) {
-			case OpenJobFolderMsg:
-				if tt.wantMsg != "folder" {
-					t.Fatalf("got OpenJobFolderMsg, want OpenJobComponentMsg (class %q)", tt.class)
-				}
-				if m.Job.GetDetails().Class != tt.class {
-					t.Errorf("Job.Class = %q, want %q", m.Job.GetDetails().Class, tt.class)
-				}
-				if m.Target.Kind == jobref.KindUnknown {
-					t.Error("Target.Kind should be resolved once the class is known")
-				}
-			case OpenJobComponentMsg:
-				if tt.wantMsg != "component" {
-					t.Fatalf("got OpenJobComponentMsg, want OpenJobFolderMsg (class %q)", tt.class)
-				}
-				if m.Job.GetDetails().Class != tt.class {
-					t.Errorf("Job.Class = %q, want %q", m.Job.GetDetails().Class, tt.class)
-				}
-			case ErrorMsg:
-				t.Fatalf("HandleJobTarget returned ErrorMsg: %v", m.Error)
-			default:
-				t.Fatalf("HandleJobTarget returned unexpected msg type %T", msg)
-			}
-
-			if got := requests.Load(); got != 1 {
-				t.Errorf("unknown target cost %d requests, want 1 discovery request", got)
-			}
-		})
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("requests before destination = %d, want 0", got)
 	}
 }
 
@@ -156,9 +95,9 @@ func TestHandleJobTarget_KnownContainerSkipsDiscovery(t *testing.T) {
 	}
 }
 
-// TestHandleJobTarget_KnownPipelineLoadsJob keeps known pipelines on the
-// ordinary path: they still need their polled job to open the run list.
-func TestHandleJobTarget_KnownPipelineLoadsJob(t *testing.T) {
+// Known pipelines open without discovery because the job page fetches its
+// own job and runs from Init; polling here would repeat its GetJob request.
+func TestHandleJobTarget_KnownPipelineSkipsDiscovery(t *testing.T) {
 	t.Parallel()
 
 	class := "org.jenkinsci.plugins.workflow.job.WorkflowJob"
@@ -171,11 +110,11 @@ func TestHandleJobTarget_KnownPipelineLoadsJob(t *testing.T) {
 	if !ok {
 		t.Fatalf("got %T, want OpenJobComponentMsg", msg)
 	}
-	if m.Job.GetDetails().Class != class {
-		t.Errorf("Job.Class = %q, want %q", m.Job.GetDetails().Class, class)
+	if m.Job != nil || m.URL != target.URL {
+		t.Errorf("message = %+v, want URL-only target %q", m, target.URL)
 	}
-	if got := requests.Load(); got != 1 {
-		t.Errorf("known pipeline cost %d requests, want 1", got)
+	if got := requests.Load(); got != 0 {
+		t.Errorf("known pipeline cost %d requests, want 0 before paint", got)
 	}
 }
 
@@ -234,42 +173,27 @@ func TestHandleJobTarget_NonJobURLWarnsWithoutDiscovery(t *testing.T) {
 	}
 }
 
-func TestHandleJobTarget_UnsupportedJobKindWarns(t *testing.T) {
+func TestUnsupportedNavigationMessage_PreservesCallerName(t *testing.T) {
 	t.Parallel()
 
-	api, requests := classServer(t, "hudson.model.FreeStyleProject")
-	msg := HandleJobTarget(jobref.Target{
-		URL:  api.Server + "/job/target/",
-		Name: "quick-health-check",
-	}, testProgram(api))()
-
-	got, ok := msg.(FooterNotiMsg)
-	if !ok {
-		t.Fatalf("got %T, want FooterNotiMsg", msg)
-	}
-	if got.Type != NotiWarning {
-		t.Errorf("Type = %v, want NotiWarning", got.Type)
-	}
-	if want := `Navigation to "quick-health-check" is not supported`; got.Message != want {
-		t.Errorf("Message = %q, want %q", got.Message, want)
-	}
-	if n := requests.Load(); n != 1 {
-		t.Errorf("unsupported job cost %d requests, want 1 discovery request", n)
+	got := UnsupportedNavigationMessage(jobref.Target{URL: "/job/target/", Name: "quick-health-check"})
+	if want := `Navigation to "quick-health-check" is not supported`; got != want {
+		t.Errorf("Message = %q, want %q", got, want)
 	}
 }
 
-func TestHandleJobTarget_UnsupportedJobKindUsesResolvedName(t *testing.T) {
+func TestUnsupportedNavigationMessage_Fallbacks(t *testing.T) {
 	t.Parallel()
-
-	api, _ := classServer(t, "hudson.model.FreeStyleProject")
-	msg := HandleJobTarget(jobref.Target{URL: api.Server + "/job/target/"}, testProgram(api))()
-
-	got, ok := msg.(FooterNotiMsg)
-	if !ok {
-		t.Fatalf("got %T, want FooterNotiMsg", msg)
-	}
-	if want := `Navigation to "target" is not supported`; got.Message != want {
-		t.Errorf("Message = %q, want %q", got.Message, want)
+	for _, tt := range []struct {
+		target jobref.Target
+		want   string
+	}{
+		{jobref.Target{URL: "/job/team/job/target/", Name: "  "}, `Navigation to "team \ueab6 target" is not supported`},
+		{jobref.Target{}, "Navigation to this item is not supported"},
+	} {
+		if got := UnsupportedNavigationMessage(tt.target); got != tt.want {
+			t.Errorf("Message = %q, want %q", got, tt.want)
+		}
 	}
 }
 

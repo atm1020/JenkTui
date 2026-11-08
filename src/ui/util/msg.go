@@ -11,7 +11,11 @@ type OpenDialogMsg struct {
 	Dialog JenkTuiDialogModel
 }
 
-type CloseDialogMsg struct{}
+// CloseDialogMsg dismisses the active dialog. Dialog, when set, closes only
+// that instance so a stale cancel cannot dismiss a dialog that replaced it.
+type CloseDialogMsg struct {
+	Dialog JenkTuiDialogModel
+}
 
 // OpenJobFolderMsg opens a container page (Folder, Organization Folder, or
 // MultiBranch Pipeline). Target carries what to show before anything loads;
@@ -20,10 +24,16 @@ type CloseDialogMsg struct{}
 type OpenJobFolderMsg struct {
 	Target jobref.Target
 	Job    *gojenkins.Job
+	// ReplaceCurrent discards a misclassified loading job page from history.
+	ReplaceCurrent bool
 }
 
+// OpenJobComponentMsg carries either a classified job or an item URL.
+// The destination fetches and classifies its own data in either case.
 type OpenJobComponentMsg struct {
-	Job *gojenkins.Job
+	Job  *gojenkins.Job
+	URL  string
+	Name string // Caller-supplied label for unsupported-kind feedback.
 }
 
 // OpenJobTargetMsg asks the app to open a navigation target. Emitting this

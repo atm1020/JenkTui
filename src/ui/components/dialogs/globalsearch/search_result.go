@@ -20,7 +20,7 @@ import (
 // SearchResultItemSelectedMsg carries the navigation target of the picked
 // result. Modern Jenkins search reports each suggestion's class, so a
 // searched-for folder keeps its classification instead of being rediscovered.
-// Whether JenkTui has a page for the target is HandleJobTarget's decision.
+// HandleJobTarget rejects non-item URLs; destinations classify unknown kinds.
 type SearchResultItemSelectedMsg struct {
 	Target jobref.Target
 }
@@ -186,7 +186,7 @@ func (s *SearchResultModel) handleKeyPressMsg(msg tea.KeyMsg) tea.Cmd {
 					return util.ErrorMsg{Title: "Could not resolve", Error: err}
 				}
 				// The legacy HTML endpoint carries no class, so the target
-				// stays unknown and the router classifies it.
+				// stays unknown and the destination classifies it.
 				return s.resultSelectedMsg(resolved.Name, resolved.URL, jobref.KindUnknown)
 			}
 		}
@@ -195,8 +195,8 @@ func (s *SearchResultModel) handleKeyPressMsg(msg tea.KeyMsg) tea.Cmd {
 }
 
 // resultSelectedMsg turns a picked suggestion into a navigation target.
-// Unsupported destinations are rejected later by HandleJobTarget so every
-// entry point shares the same warning.
+// Non-item URLs are rejected by HandleJobTarget; unsupported job kinds show
+// the same warning text in the destination after classification.
 func (s *SearchResultModel) resultSelectedMsg(name, resultURL string, kind jobref.Kind) tea.Msg {
 	return SearchResultItemSelectedMsg{Target: jobref.Target{
 		URL:  jobref.ToAbsolute(s.ctx.Jenkins.Server, resultURL),

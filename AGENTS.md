@@ -11,6 +11,14 @@ Do not read, print, commit, or copy Jenkins credentials. Never modify a develope
 Resolve versions, commands, and behavior from `go.mod`, `Taskfile.yml`, and source,
 not old plans or examples. Check design-note status banners before following them.
 
+## Toolchain
+
+`flake.nix` provides `task`, `golangci-lint`, `gofumpt`, `delve`, and `vhs`; a
+bare shell may have only `go`. Run gates through the dev shell
+(`nix develop --command task check`) or enter it once with `nix develop`. That
+shell sets `CGO_ENABLED=0`, so race runs go through `task test`, which overrides
+it, or carry it explicitly: `CGO_ENABLED=1 go test -race ./...`.
+
 ## Task routes
 
 - **Code changes/reviews:** [completion gates](CODING_STANDARDS.md#completion-gates)

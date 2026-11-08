@@ -19,12 +19,13 @@ func (m *Manager) publishSnapshot(snapshot Snapshot) {
 	m.signalDelivery()
 }
 
-func (m *Manager) recordFailure(target Target, err error) {
+func (m *Manager) recordFailure(demand watchDemand, err error) {
 	m.aggregateMu.Lock()
-	failure := m.pendingFailures[target]
-	failure.Target, failure.At, failure.Err = target, time.Now(), err
+	failure := m.pendingFailures[demand.Target]
+	failure.Target, failure.Generation = demand.Target, demand.Generation
+	failure.At, failure.Err = time.Now(), err
 	failure.Occurrences++
-	m.pendingFailures[target] = failure
+	m.pendingFailures[demand.Target] = failure
 	m.aggregateMu.Unlock()
 	m.signalDelivery()
 }

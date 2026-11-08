@@ -777,8 +777,31 @@ func TestReplayRunOpensScriptView(t *testing.T) {
 	}
 }
 
+// lastParamsMsg runs a command tree and returns the parameter result in it,
+// skipping the spinner tick that starts the row animation.
+func lastParamsMsg(t *testing.T, cmd tea.Cmd) buildaction.ParamsFetchedMsg {
+	t.Helper()
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, child := range batch {
+			if child == nil {
+				continue
+			}
+			if params, ok := child().(buildaction.ParamsFetchedMsg); ok {
+				return params
+			}
+		}
+		t.Fatal("no parameter result in the trigger command")
+	}
+	params, ok := msg.(buildaction.ParamsFetchedMsg)
+	if !ok {
+		t.Fatalf("trigger result = %T, want a parameter result", msg)
+	}
+	return params
+}
+
 // My Runs stores a job URL only, so triggering has to resolve the job before
-// the parameter dialog can be opened.
+// the parameter dialog can be opened. The wait shows on the row meanwhile.
 func TestTriggerBuildForRunFetchesParamsByURL(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/job/demo/api/json" {
@@ -792,12 +815,22 @@ func TestTriggerBuildForRunFetchesParamsByURL(t *testing.T) {
 	m := newTestModel(t, store.New(t.TempDir()))
 	m.ctx.Jenkins = gojenkins.CreateJenkins(nil, server.URL)
 
-	msg, ok := m.triggerBuildForRun(store.RunRecord{JobURL: server.URL + "/job/demo/"})().(buildaction.ParamsFetchedMsg)
-	if !ok {
-		t.Fatal("trigger result is not a buildaction.ParamsFetchedMsg")
+	record := store.RunRecord{ID: server.URL + "/job/demo/#42", JobURL: server.URL + "/job/demo/", BuildID: "42"}
+	cmd := m.triggerBuildForRun(record)
+	if m.triggeringID != record.ID {
+		t.Fatalf("triggering row = %q, want %q", m.triggeringID, record.ID)
 	}
+	if !m.shouldAnimate() {
+		t.Fatal("the trigger wait did not start the row animation")
+	}
+
+	msg := lastParamsMsg(t, cmd)
 	if msg.Error != nil {
 		t.Fatalf("params fetch error = %v, want nil", msg.Error)
+	}
+	m.Update(msg)
+	if m.triggeringID != "" || m.shouldAnimate() {
+		t.Fatal("the row kept animating after the parameters arrived")
 	}
 	if msg.Job == nil || msg.Job.GetName() != "demo" {
 		t.Fatalf("resolved job = %#v, want demo", msg.Job)
@@ -820,7 +853,7 @@ func TestRowActionsIgnoreEmptyList(t *testing.T) {
 
 func TestCleanupInvalidatesTriggerParamsRequest(t *testing.T) {
 	m := newTestModel(t, store.New(t.TempDir()))
-	fetch := m.paramsRequest.Fetch(m.ctx, nil)
+	fetch := m.paramsRequest.Fetch(nil)
 
 	_ = m.CleanUp()
 	_, cmd := m.Update(fetch())

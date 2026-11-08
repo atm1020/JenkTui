@@ -59,14 +59,9 @@ Steps:
   - Expect exactly one row:
     `http://127.0.0.1:8080/job/DevTeam/job/Frontend/job/mobile-app/ | local | job`.
 - **Open from Favorites.**
-  - Run `$J keys RUN Enter && $J wait RUN 'Health Score|No health report available'`.
-- **Persistence.**
-  - Before deleting, restart only this RUN's binary in the same HOME:
-    `tmux -L jtv-RUN respawn-pane -k -t jt env HOME=${TMPDIR:-/tmp}/jenktui-verify/RUN/home TERM=xterm-256color COLORTERM=truecolor ${TMPDIR:-/tmp}/jenktui-verify/RUN/jenktui`.
-    If `JT_STATE_ROOT` is set, substitute its RUN path instead.
-  - Wait for authenticated home, run `$J doctor RUN`, then `f` and wait
-    for `Jobs (1)`. Snap the retained favorite and query the DB again.
-    `down`/`up` cannot prove persistence: it replaces the sandbox.
+  - Run `$J keys RUN Enter && $J crumb RUN 'Frontend.*mobile-app' && $J wait RUN '│ #[0-9]+ │'`.
+  - A known pipeline may first show centered `Loading job...`; the header
+    or breadcrumb alone does not mean it is ready for keys.
 - **Delete.**
   - Run `$J keys RUN f && $J wait RUN 'Jobs \(1\)'`.
   - Then run `$J keys RUN d && $J wait RUN 'Jobs \(0\)'`.

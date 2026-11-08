@@ -42,14 +42,16 @@ type ParamsFetchedMsg struct {
 	Error     error
 }
 
-// Fetch loads the parameter definitions of an already-resolved job.
-func (r *ParamsRequest) Fetch(ctx *context.ProgramContext, job *gojenkins.Job) tea.Cmd {
+// Fetch reads the parameter definitions of an already-resolved job, which its
+// polled record already carries, so no request is made.
+func (r *ParamsRequest) Fetch(job *gojenkins.Job) tea.Cmd {
 	r.id = paramsRequestID(paramsRequestSequence.Add(1))
-	return fetchParams(ctx, job, r.id)
+	return fetchParams(job, r.id)
 }
 
 // FetchByURL resolves a job from its URL first. My Runs rows name a job by URL
-// only, so the job has to be fetched before its parameters are known.
+// only, so the job has to be fetched before its parameters are known. The
+// caller shows that wait on its own row; no dialog opens until the job answers.
 func (r *ParamsRequest) FetchByURL(ctx *context.ProgramContext, jobURL string) tea.Cmd {
 	r.id = paramsRequestID(paramsRequestSequence.Add(1))
 	requestID := r.id
@@ -58,7 +60,7 @@ func (r *ParamsRequest) FetchByURL(ctx *context.ProgramContext, jobURL string) t
 		if err != nil {
 			return ParamsFetchedMsg{requestID: requestID, Error: err}
 		}
-		return fetchParams(ctx, job, requestID)()
+		return fetchParams(job, requestID)()
 	}
 }
 
@@ -100,15 +102,18 @@ func (r *ParamsRequest) Invalidate() {
 	r.id = 0
 }
 
-func fetchParams(ctx *context.ProgramContext, job *gojenkins.Job, requestID paramsRequestID) tea.Cmd {
+func fetchParams(job *gojenkins.Job, requestID paramsRequestID) tea.Cmd {
 	return func() tea.Msg {
-		if job == nil {
+		if job == nil || job.Raw == nil {
 			return ParamsFetchedMsg{requestID: requestID, Error: errors.New("no job is available for this view")}
 		}
-		requestCtx, cancel := ctx.RequestContext()
-		defer cancel()
-		params, err := job.GetParameters(requestCtx)
-		return ParamsFetchedMsg{requestID: requestID, Job: job, Params: params, Error: err}
+		// GetJob has already polled the complete JobResponse, including Property.
+		// GetParameters would poll it again just to flatten these definitions.
+		var params []gojenkins.ParameterDefinition
+		for _, property := range job.Raw.Property {
+			params = append(params, property.ParameterDefinitions...)
+		}
+		return ParamsFetchedMsg{requestID: requestID, Job: job, Params: params}
 	}
 }
 
@@ -149,6 +154,9 @@ func openTriggerDialog(
 			onCancel,
 			ctx.Config.KeyMapConfig.Dialog.Confirm,
 		)
+		// The shell does not size a dialog until the next resize, so a long
+		// question would overflow a narrow terminal on its first frame.
+		dialog.SetWindowWidth(windowWidth)
 		return util.CmdHandler(util.OpenDialogMsg{Dialog: dialog})
 	}
 

@@ -128,13 +128,18 @@ proof runs hit:
 - Dialogs draw over the old page, so the old page's text stays on screen. A
   plain `wait 'Health Score'` can match the page you just left. **Use
   `crumb` for the page identity**, then `wait` for page content.
-- The job page drops every key while it is loading, and its `Health Score`
-  header can render before loading finishes. For a job with builds, wait
-  for build boxes: `$J wait RUN '│ #[0-9]+ │'`. A never-built job instead
-  becomes ready at `No pipeline runs found`. Folder pages are ready at
-  `N items`. The build page also drops keys during loading: after its
-  breadcrumb/header, wait for loaded content such as `Stage ID:` on a
-  completed pipeline before sending actions.
+- A pipeline or unknown-kind job URL (including My Runs → `ctrl+j`) first
+  paints a centered `Loading job...` spinner without
+  page chrome. The job page drops every key while it is loading, and its
+  `Health Score` header can render before loading finishes. A breadcrumb
+  alone identifies the destination, not readiness. The job page is ready only when
+  build boxes are drawn: `$J wait RUN '│ #[0-9]+ │'`. Folder pages are ready
+  at `N items`. If classification finds an unsupported kind, wait for
+  `Navigation to ... is not supported` and the configured `Back returns` hint
+  instead of build boxes. Back returns normally; Forward reopens that page.
+  If initial polling fails, wait for `Could not load pipeline runs:` and
+  `Back returns` instead. The error replaces the spinner; a successful poll
+  retry can restore the page without reopening it.
 
 The canonical "open a job" sequence:
 

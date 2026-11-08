@@ -13,6 +13,7 @@ type JobLoadedMsg struct {
 	HasInProgressBuild bool
 	IsFavorite         bool
 	RedirectTarget     *jobref.Target
+	UnsupportedMessage string
 	Error              error
 	ErrorTitle         string
 }
