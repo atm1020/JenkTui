@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/atm1020/jenktui/src/config"
@@ -13,10 +15,36 @@ import (
 	"github.com/atm1020/jenktui/src/store"
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/buildparams"
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/confirm"
+	"github.com/atm1020/jenktui/src/ui/styles"
 	"github.com/atm1020/jenktui/src/ui/util"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/atm1020/gojenkins"
 )
+
+// Sequence's message is private to Bubble Tea; walk its commands as the runtime
+// does, without starting the terminal or any background timers.
+func paramsMessages(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	value := reflect.ValueOf(msg)
+	if value.IsValid() && value.Kind() == reflect.Slice {
+		var messages []tea.Msg
+		for i := 0; i < value.Len(); i++ {
+			messages = append(messages, paramsMessages(value.Index(i).Interface().(tea.Cmd))...)
+		}
+		return messages
+	}
+	return []tea.Msg{msg}
+}
+
+func fetchedParams(cmd tea.Cmd) ParamsFetchedMsg {
+	messages := paramsMessages(cmd)
+	return messages[len(messages)-1].(ParamsFetchedMsg)
+}
 
 func demoJob(jenkins *gojenkins.Jenkins, serverURL string) *gojenkins.Job {
 	return &gojenkins.Job{
@@ -157,7 +185,9 @@ func TestOpenTriggerDialogPicksDialogByParameterCount(t *testing.T) {
 // My Runs rows name a job by URL only, so the job has to be resolved before
 // its parameters can be read — and a failure there must surface as an error.
 func TestFetchParamsByURLResolvesJob(t *testing.T) {
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
 		switch request.URL.Path {
 		case "/job/demo/api/json":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -180,10 +210,7 @@ func TestFetchParamsByURLResolvesJob(t *testing.T) {
 
 	var request ParamsRequest
 	cmd := request.FetchByURL(ctx, server.URL+"/job/demo/")
-	msg, ok := cmd().(ParamsFetchedMsg)
-	if !ok {
-		t.Fatalf("fetch result is not a ParamsFetchedMsg")
-	}
+	msg := fetchedParams(cmd)
 	if msg.Error != nil {
 		t.Fatalf("fetch error = %v, want nil", msg.Error)
 	}
@@ -199,6 +226,9 @@ func TestFetchParamsByURLResolvesJob(t *testing.T) {
 	if len(msg.Params[0].Choices) != 2 || msg.Params[0].Choices[1] != "release" {
 		t.Fatalf("fetched choices = %#v, want main and release", msg.Params[0].Choices)
 	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("job GETs = %d, want exactly one", got)
+	}
 }
 
 func TestFetchParamsByURLReportsUnknownJob(t *testing.T) {
@@ -212,10 +242,7 @@ func TestFetchParamsByURLReportsUnknownJob(t *testing.T) {
 
 	var request ParamsRequest
 	cmd := request.FetchByURL(ctx, server.URL+"/job/missing/")
-	msg, ok := cmd().(ParamsFetchedMsg)
-	if !ok {
-		t.Fatalf("fetch result is not a ParamsFetchedMsg")
-	}
+	msg := fetchedParams(cmd)
 	if msg.Error == nil {
 		t.Fatal("fetching an unknown job returned no error")
 	}
@@ -227,13 +254,40 @@ func TestFetchParamsByURLReportsUnknownJob(t *testing.T) {
 	}
 }
 
+func TestResolvedParamsUseAllPropertiesWithoutPolling(t *testing.T) {
+	for _, definitions := range []string{
+		`{"name":"demo","property":[]}`,
+		`{"name":"demo","property":[{}, {"parameterDefinitions":[{"name":"A"}]}, {"parameterDefinitions":[{"name":"B"}]}]}`,
+	} {
+		var raw gojenkins.JobResponse
+		if err := json.Unmarshal([]byte(definitions), &raw); err != nil {
+			t.Fatal(err)
+		}
+		// No Jenkins client: any accidental poll would fail this test.
+		job := &gojenkins.Job{Raw: &raw}
+		ctx := &context.ProgramContext{Config: config.GetDefaultConfig()}
+		var request ParamsRequest
+		msg := fetchedParams(request.Fetch(job))
+		if msg.Error != nil {
+			t.Fatal(msg.Error)
+		}
+		if len(raw.Property) > 0 && (len(msg.Params) != 2 || msg.Params[0].Name != "A" || msg.Params[1].Name != "B") {
+			t.Fatalf("flattened parameters = %#v", msg.Params)
+		}
+		messages := paramsMessages(request.Handle(ctx, 80, msg))
+		if len(messages) != 1 {
+			t.Fatalf("result messages = %v, want only the dialog", messages)
+		}
+		if _, ok := messages[0].(util.OpenDialogMsg); !ok {
+			t.Fatalf("result = %T, want dialog", messages[0])
+		}
+	}
+}
+
 func TestFetchParamsRequiresJob(t *testing.T) {
 	var request ParamsRequest
-	cmd := request.Fetch(&context.ProgramContext{Config: config.GetDefaultConfig()}, nil)
-	msg, ok := cmd().(ParamsFetchedMsg)
-	if !ok {
-		t.Fatalf("fetch result is not a ParamsFetchedMsg")
-	}
+	cmd := request.Fetch(nil)
+	msg := fetchedParams(cmd)
 	if msg.Error == nil || !strings.Contains(msg.Error.Error(), "no job") {
 		t.Fatalf("fetch error = %v, want a missing-job error", msg.Error)
 	}
@@ -242,24 +296,55 @@ func TestFetchParamsRequiresJob(t *testing.T) {
 	}
 }
 
+// The confirmation is sized by its question, so it never balloons to the width
+// reserved for list dialogs and parameter forms.
+func TestTriggerConfirmationStaysNarrowerThanTheSharedDialogWidth(t *testing.T) {
+	ctx := &context.ProgramContext{Config: config.GetDefaultConfig()}
+	job := &gojenkins.Job{Raw: &gojenkins.JobResponse{Name: "post-fail"}}
+
+	for _, windowWidth := range []int{120, 160, 220} {
+		resolved := openTriggerDialog(ctx, windowWidth, ParamsFetchedMsg{Job: job},
+			func(*gojenkins.Job, map[string]string) tea.Cmd { return nil })
+		dialog := resolved().(util.OpenDialogMsg).Dialog
+		got := lipgloss.Width(dialog.View())
+		if shared := styles.DialogWidth(windowWidth); got >= shared {
+			t.Errorf("window %d: confirmation is %d wide, as wide as the shared %d", windowWidth, got, shared)
+		}
+		frame := styles.GetTheme().S().DialogBorder.GetHorizontalFrameSize()
+		if want := lipgloss.Width("Are you sure you want to trigger a new build for post-fail?") + frame; got != want {
+			t.Errorf("window %d: width = %d, want the question plus frame (%d)", windowWidth, got, want)
+		}
+	}
+}
+
 func TestParamsRequestRejectsSupersededAndInvalidatedResults(t *testing.T) {
 	ctx := &context.ProgramContext{Config: config.GetDefaultConfig()}
 	var request ParamsRequest
 
-	oldCmd := request.Fetch(ctx, nil)
-	currentCmd := request.Fetch(ctx, nil)
-	oldMsg := oldCmd().(ParamsFetchedMsg)
-	currentMsg := currentCmd().(ParamsFetchedMsg)
+	oldCmd := request.Fetch(nil)
+	currentCmd := request.Fetch(nil)
+	oldMsg := fetchedParams(oldCmd)
+	currentMsg := fetchedParams(currentCmd)
 
 	if cmd := request.Handle(ctx, 80, oldMsg); cmd != nil {
 		t.Fatal("superseded parameter result returned a command")
 	}
-	if cmd := request.Handle(ctx, 80, currentMsg); cmd == nil {
-		t.Fatal("current parameter result returned no command")
+	messages := paramsMessages(request.Handle(ctx, 80, currentMsg))
+	if len(messages) != 1 {
+		t.Fatalf("current result messages = %v, want only the error", messages)
+	}
+	if _, ok := messages[0].(util.ErrorMsg); !ok {
+		t.Fatalf("message = %T, want error", messages[0])
+	}
+	if cmd := request.Handle(ctx, 80, oldMsg); cmd != nil {
+		t.Fatal("late superseded result changed feedback after completion")
+	}
+	if cmd := request.Handle(ctx, 80, currentMsg); cmd != nil {
+		t.Fatal("duplicate result changed feedback after completion")
 	}
 
-	invalidatedCmd := request.Fetch(ctx, nil)
-	invalidatedMsg := invalidatedCmd().(ParamsFetchedMsg)
+	invalidatedCmd := request.Fetch(nil)
+	invalidatedMsg := fetchedParams(invalidatedCmd)
 	request.Invalidate()
 	if cmd := request.Handle(ctx, 80, invalidatedMsg); cmd != nil {
 		t.Fatal("parameter result survived request invalidation")

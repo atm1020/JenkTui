@@ -150,16 +150,15 @@ func GetTickCmd(loopTime time.Duration) func() tea.Msg {
 // target into the message that opens the right page.
 //
 // A URL that is not a Jenkins item (a node, view, user, or manage page) is
-// rejected immediately with a footer warning, as is a job kind JenkTui has
-// no page for (for example Freestyle). Every entry point — global search,
-// folder view, favorites, My Runs — goes through this function, so that
-// warning is not search-specific.
+// rejected immediately with a footer warning. Unsupported job kinds (for
+// example Freestyle) are discovered by the destination and shown in place.
+// Every entry point — global search, folder view, favorites, My Runs — goes
+// through this function, so feedback is not search-specific.
 //
-// A target whose Kind is already known is routed on the spot. Containers in
-// particular open with no request at all — their page issues one focused
-// child query of its own, so a discovery poll here would only re-learn a
-// class the caller already told us. Only a genuinely unknown target (a URL
-// from global search or a run record) pays for classification first.
+// Known containers and pipelines open without discovery: their pages fetch
+// their own data from Init, so classification here would duplicate that work.
+// Unknown targets also open immediately; the destination classifies them and
+// replaces itself for containers or shows an unsupported-kind message in place.
 func HandleJobTarget(target jobref.Target, program *appcontext.ProgramContext) tea.Cmd {
 	api := program.Jenkins
 	if !jobref.IsJobURL(target.URL) {
@@ -180,47 +179,17 @@ func HandleJobTarget(target jobref.Target, program *appcontext.ProgramContext) t
 		})
 	}
 
-	return func() tea.Msg {
-		ctx, cancel := program.RequestContext()
-		defer cancel()
-		id, parentIDs := jobref.ToIDAndParents(target.URL)
-		log.Debug("HandleJobTarget: resolving", "url", target.URL, "id", id, "parents", parentIDs)
-
-		job, err := api.GetJob(ctx, id, parentIDs...)
-		if err != nil {
-			return ErrorMsg{
-				Error: err,
-				Title: "Could not open job — it may have been deleted",
-			}
-		}
-
-		resolved := TargetFromJob(api, job)
-		log.Debug("HandleJobTarget: resolved job",
-			"requestedUrl", target.URL,
-			"resolvedUrl", resolved.URL,
-			"class", job.GetDetails().Class,
-			"kind", resolved.Kind,
-		)
-		switch {
-		case resolved.Kind.IsContainer():
-			return OpenJobFolderMsg{Target: resolved, Job: job}
-		case resolved.Kind == jobref.KindPipeline:
-			return OpenJobComponentMsg{Job: job}
-		default:
-			log.Debug("HandleJobTarget: unsupported destination",
-				"reason", "job kind has no page",
-				"requestedUrl", target.URL,
-				"resolvedUrl", resolved.URL,
-				"name", target.Name,
-				"class", job.GetDetails().Class,
-				"kind", resolved.Kind,
-			)
-			if strings.TrimSpace(target.Name) == "" {
-				return unsupportedNavigationMsg(resolved)
-			}
-			return unsupportedNavigationMsg(target)
-		}
+	if target.Kind == jobref.KindPipeline {
+		return CmdHandler(OpenJobComponentMsg{URL: target.URL})
 	}
+
+	return CmdHandler(OpenJobComponentMsg{URL: target.URL, Name: target.Name})
+}
+
+// UnsupportedNavigationMessage shares the navigation notice wording with pages
+// that discover an unsupported kind after opening.
+func UnsupportedNavigationMessage(target jobref.Target) string {
+	return unsupportedNavigationMsg(target).Message
 }
 
 // unsupportedNavigationMsg is the feedback for a target JenkTui has no page

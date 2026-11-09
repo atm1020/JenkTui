@@ -38,6 +38,12 @@ func NewConfirmDialog(question string, onConfirm tea.Cmd, onCancel tea.Cmd, keym
 	}
 }
 
+// SetWindowWidth supplies the terminal width to a dialog built outside the
+// resize flow, so its first render clamps like one that has seen a resize.
+func (c *ConfirmDialog) SetWindowWidth(windowWidth int) {
+	c.width = windowWidth
+}
+
 func (c *ConfirmDialog) Init() tea.Cmd {
 	return nil
 }
@@ -75,26 +81,24 @@ func (c *ConfirmDialog) View() string {
 	noButton := noStyle.PaddingLeft(horizontalPadding).Underline(true).Render("N") +
 		noStyle.PaddingRight(horizontalPadding).Render("o")
 
-	questionWidth := lipgloss.Width(c.question)
-	buttons := baseStyle.Width(questionWidth).Align(lipgloss.Right).Render(
-		lipgloss.JoinHorizontal(lipgloss.Center, yesButton, baseStyle.Render("  "), noButton),
-	)
-
-	// Paint every part to the widest part's width so no unstyled cells leak the
-	// terminal's default background, then size the container to fit.
-	content, w := util.JoinDialogParts(c.question, "", buttons)
-
-	// Clamp into the shared dialog floor/ceiling so a short question still reads
-	// as the same popup size as the rest of the app, and a long one never
-	// overflows the window.
-	clampedWidth := styles.ClampDialogWidth(w, c.width)
-	if clampedWidth != w {
-		content = lipgloss.NewStyle().Width(clampedWidth).Render(content)
-		w = clampedWidth
-	}
-
+	buttonRow := lipgloss.JoinHorizontal(lipgloss.Center, yesButton, baseStyle.Render("  "), noButton)
 	border := t.S().DialogBorder
-	return border.Width(w + border.GetHorizontalFrameSize()).Render(content)
+
+	// The question and the buttons share one content width, so the buttons sit
+	// against the dialog's right edge instead of the question's. Clamping into
+	// the shared dialog floor/ceiling keeps a short question at the same popup
+	// size as the rest of the app and a long one inside the window.
+	contentWidth := styles.ClampDialogWidth(
+		max(lipgloss.Width(c.question), lipgloss.Width(buttonRow)), c.width)
+
+	// Paint every part to the content width so no unstyled cells leak the
+	// terminal's default background, then size the container to fit.
+	content, _ := util.JoinDialogParts(
+		baseStyle.Width(contentWidth).Render(c.question),
+		"",
+		baseStyle.Width(contentWidth).Align(lipgloss.Right).Render(buttonRow),
+	)
+	return border.Width(contentWidth + border.GetHorizontalFrameSize()).Render(content)
 }
 
 // UpdateFooter updates the footer with keybindings.

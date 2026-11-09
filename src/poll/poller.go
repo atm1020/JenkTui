@@ -49,7 +49,7 @@ func (e pollingExecutor) resolveAndApplyExactRunDemands(
 			if run, ok := findRun(window.Runs, demand.Target.BuildNumber); ok {
 				observation := Observation{Target: demand.Target, ObservedAt: window.ObservedAt, Runs: []RunSnapshot{run}}
 				if err := e.manager.applyExact(ctx, demand, observation); err != nil {
-					e.manager.recordFailure(demand.Target, err)
+					e.manager.recordFailure(demand, err)
 					combined = errors.Join(combined, err)
 				}
 				continue
@@ -57,12 +57,12 @@ func (e pollingExecutor) resolveAndApplyExactRunDemands(
 		}
 		observation, err := e.source.fetchExact(ctx, demand.Target)
 		if err != nil {
-			e.manager.recordFailure(demand.Target, err)
+			e.manager.recordFailure(demand, err)
 			combined = errors.Join(combined, err)
 			continue
 		}
 		if err := e.manager.applyExact(ctx, demand, observation); err != nil {
-			e.manager.recordFailure(demand.Target, err)
+			e.manager.recordFailure(demand, err)
 			combined = errors.Join(combined, err)
 		}
 	}
@@ -79,11 +79,11 @@ func (e pollingExecutor) fetchAndApplyDemandedWindow(ctx context.Context, work j
 		cursor, full := e.manager.windowRequest(work.jobURL)
 		observation, err := e.source.fetchWindow(ctx, work.jobURL, cursor)
 		if err != nil {
-			e.manager.recordFailure(demand.Target, err)
+			e.manager.recordFailure(demand, err)
 			return Observation{}, false, err
 		}
 		if err := e.manager.applyWindow(ctx, demand, observation, full); err != nil {
-			e.manager.recordFailure(demand.Target, err)
+			e.manager.recordFailure(demand, err)
 			return Observation{}, false, err
 		}
 		return observation, true, nil

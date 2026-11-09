@@ -1,10 +1,14 @@
 package globalsearch
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/atm1020/jenktui/src/context"
 	"github.com/atm1020/jenktui/src/jobref"
+	"github.com/atm1020/jenktui/src/ui/util"
 
 	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
@@ -134,10 +138,31 @@ func TestResultSelectedMsg_EmptyNameStillEmitsTarget(t *testing.T) {
 	}
 }
 
+func TestUnknownSearchSelectionRoutesWithoutClassificationRequest(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unexpected discovery", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	ctx := &context.ProgramContext{Jenkins: gojenkins.CreateJenkins(nil, server.URL)}
+	m := NewSearcResultModel(ctx, 40, 12, testKeymapConf())
+	m.list.SetItems([]list.Item{NewSearchResultItem(&gojenkins.Suggestion{Name: "target", URL: "/job/team/job/target/"})})
+	selected := m.handleKeyPressMsg(tea.KeyPressMsg{Code: tea.KeyEnter})().(SearchResultItemSelectedMsg)
+	msg := util.HandleJobTarget(selected.Target, ctx)()
+	open, ok := msg.(util.OpenJobComponentMsg)
+	if !ok || open.Job != nil || open.URL != server.URL+"/job/team/job/target/" || open.Name != "target" {
+		t.Fatalf("selection did not route URL-only: %#v", msg)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("selection made %d discovery requests", requests.Load())
+	}
+}
+
 // TestSelect_PreservesSuggestionClassification pins how a search hit becomes
 // a navigation target. When Jenkins reports a class in "type", a searched-for
 // folder can open straight into its container page. Anything that isn't a class
-// JenkTui recognises stays KindUnknown and takes the discovery path.
+// JenkTui recognises stays KindUnknown and is classified in the destination.
 func TestSelect_PreservesSuggestionClassification(t *testing.T) {
 	tests := []struct {
 		name           string

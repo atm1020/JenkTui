@@ -29,7 +29,7 @@ func OpenJob(job *gojenkins.Job) tea.Cmd {
 }
 
 // OpenJobByURL navigates to a job known only by its stored identity. The app's
-// job router resolves its kind before choosing the destination page.
+// destination opens immediately and resolves its kind while loading.
 func OpenJobByURL(jobURL, jobName string) tea.Cmd {
 	if strings.TrimSpace(jobURL) == "" {
 		return openError("job URL is not available", "Could not open job")

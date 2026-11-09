@@ -69,14 +69,21 @@ sub-feature or optional external effect below.
 
 | Surfaces | Recipe |
 |---|---|
-| Home, theme preview/save/cancel, local/global help | [home-theme-help.md](./home-theme-help.md) |
-| Global search, folder listing, back/forward | [search-and-browse.md](./search-and-browse.md) |
-| Job, build, selected step log, parameter display | [job-and-build.md](./job-and-build.md) |
+| Home splash | [home-theme-help.md](./home-theme-help.md) |
+| Global search dialog | [search-and-browse.md](./search-and-browse.md) |
+| Folder listing | [search-and-browse.md](./search-and-browse.md) |
+| Job page + shared poll startup / failure / replay / unsupported-kind states | [job-and-build.md](./job-and-build.md) |
+| Build page + step log (`ctrl+l`) | [job-and-build.md](./job-and-build.md) |
 | Console log viewer | [log-viewer.md](./log-viewer.md) |
-| Trigger confirmation, My Runs | [trigger-and-my-runs.md](./trigger-and-my-runs.md) |
+| Trigger loading feedback + confirm + My Runs | [trigger-and-my-runs.md](./trigger-and-my-runs.md) |
 | Favorites | [favorites.md](./favorites.md) |
 | Build form, artifacts/open-folder confirmation, replay, cancellation | [build-actions.md](./build-actions.md) |
 | Server picker, add/edit setup, private-CA test/save | [server-selector.md](./server-selector.md) |
+
+Trigger verification (2026-11-08): `dist/verify/trigger-1-all/` and
+`trigger-1-params/` cover job/build/My Runs triggers; `trigger-1-dynamic-e2e/`
+proves cascading Active Choices values reach Jenkins and a resolved `SUCCESS`
+run is stored. See the trigger recipe for the required entry points.
 
 Not verified yet:
 
@@ -85,7 +92,6 @@ Not verified yet:
 - Log yank (`y`, which writes the host clipboard)
 - Node selector
 - Multibranch (`merge-queue-test`)
-- Active Choices / dynamic parameters (`Dynamic/`)
 - Desktop notifications
 
 ## Known app issues found while verifying (2026-10-03)

@@ -49,6 +49,9 @@ type Model struct {
 	list          *list.Model
 	spinnerModel  spinner.Model
 	hasInProgress bool
+	// triggeringID is the row whose job is being resolved for a trigger. Its
+	// status cell animates until the parameters arrive and the dialog opens.
+	triggeringID  string
 	query         store.RunQuery
 	loadReqID     int64
 	paramsRequest buildaction.ParamsRequest
@@ -116,6 +119,7 @@ func (m *Model) Update(msg tea.Msg) (util.JenkTuiModel, tea.Cmd) {
 	case FilterDebounceMsg:
 		return m, m.handleFilterDebounce(msg)
 	case buildaction.ParamsFetchedMsg:
+		m.finishTriggerWait()
 		return m, m.paramsRequest.Handle(m.ctx, m.wWidth, msg)
 	case RunDeletedMsg:
 		return m, m.loadRuns()
@@ -204,6 +208,7 @@ func (m *Model) UpdateFooter() tea.Cmd {
 func (m *Model) CleanUp() tea.Cmd {
 	m.paramsRequest.Invalidate()
 	m.hasInProgress = false
+	m.triggeringID = ""
 	t := styles.GetTheme()
 	m.spinnerModel = spinner.New(
 		spinner.WithSpinner(spinner.Spinner{Frames: spinner.Dot.Frames, FPS: animation.FrameInterval}),
@@ -310,12 +315,18 @@ func (m *Model) columnWidths() myRunsColumnWidths {
 	return myRunsColumnWidthsFor(m.contentWidth())
 }
 
+// shouldAnimate reports whether anything on screen is moving: a live run, or a
+// row waiting on the parameters its trigger needs.
+func (m *Model) shouldAnimate() bool {
+	return m.hasInProgress || m.triggeringID != ""
+}
+
 func (m *Model) listDelegate(widths myRunsColumnWidths) runItemDelegate {
 	frame := ""
-	if m.hasInProgress {
+	if m.shouldAnimate() {
 		frame = m.spinnerModel.View()
 	}
-	return runItemDelegate{widths: widths, spinnerFrame: frame}
+	return runItemDelegate{widths: widths, spinnerFrame: frame, triggeringID: m.triggeringID}
 }
 
 func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
@@ -629,9 +640,27 @@ func (m *Model) openJobOfRun(record store.RunRecord) tea.Cmd {
 }
 
 // triggerBuildForRun starts the trigger flow for the run's job, which has to
-// be resolved from its URL before its parameters can be read.
+// be resolved from its URL before its parameters can be read. The wait shows
+// on the row the user acted on, so nothing covers the list until the trigger
+// dialog can open at its finished size.
 func (m *Model) triggerBuildForRun(record store.RunRecord) tea.Cmd {
-	return m.paramsRequest.FetchByURL(m.ctx, record.JobURL)
+	wasAnimating := m.shouldAnimate()
+	m.triggeringID = record.ID
+	cmds := []tea.Cmd{m.paramsRequest.FetchByURL(m.ctx, record.JobURL)}
+	if !wasAnimating {
+		cmds = append(cmds, m.spinnerModel.Tick)
+	}
+	m.updateSpinnerFrames()
+	return tea.Batch(cmds...)
+}
+
+// finishTriggerWait clears the row animation once the fetch has answered.
+func (m *Model) finishTriggerWait() {
+	if m.triggeringID == "" {
+		return
+	}
+	m.triggeringID = ""
+	m.updateSpinnerFrames()
 }
 
 // abortRun stops the selected run. My Runs is mostly build history, so a row
@@ -666,11 +695,12 @@ func (m *Model) handleRunsLoaded(msg RunsLoadedMsg) tea.Cmd {
 		m.runs = msg.Runs
 	}
 
-	wasInProgress := m.hasInProgress
+	wasAnimating := m.shouldAnimate()
 	m.hasInProgress = m.checkInProgress()
 	cmds := []tea.Cmd{loadNotify, m.buildList()}
-	// A refresh must not inject an immediate frame into the running tick chain.
-	if m.hasInProgress && !wasInProgress {
+	// A refresh must not inject an immediate frame into the running tick chain,
+	// including one a pending trigger already started.
+	if m.shouldAnimate() && !wasAnimating {
 		cmds = append(cmds, m.spinnerModel.Tick)
 	}
 	return tea.Batch(cmds...)
@@ -696,7 +726,7 @@ func (m *Model) handleRunsQueried(msg RunsQueriedMsg) tea.Cmd {
 		selectedID = m.selectedRunID()
 	}
 	m.runs = msg.Runs
-	wasInProgress := m.hasInProgress
+	wasAnimating := m.shouldAnimate()
 	m.hasInProgress = m.checkInProgress()
 	cmd := m.buildList()
 	if msg.PreserveSelection {
@@ -704,7 +734,7 @@ func (m *Model) handleRunsQueried(msg RunsQueriedMsg) tea.Cmd {
 	}
 
 	cmds := []tea.Cmd{cmd}
-	if m.hasInProgress && !wasInProgress {
+	if m.shouldAnimate() && !wasAnimating {
 		cmds = append(cmds, m.spinnerModel.Tick)
 	}
 	return tea.Batch(cmds...)
@@ -935,7 +965,7 @@ func (m *Model) handleFilterDebounce(msg FilterDebounceMsg) tea.Cmd {
 }
 
 func (m *Model) handleSpinnerTick(msg spinner.TickMsg) tea.Cmd {
-	if !m.hasInProgress {
+	if !m.shouldAnimate() {
 		return nil
 	}
 	var cmd tea.Cmd
@@ -1036,6 +1066,9 @@ func (i runItem) FilterValue() string {
 type runItemDelegate struct {
 	widths       myRunsColumnWidths
 	spinnerFrame string
+	// triggeringID is the row resolving a job for a trigger, which animates
+	// regardless of the status its own run finished in.
+	triggeringID string
 }
 
 func (d runItemDelegate) Height() int  { return runItemHeight }
@@ -1067,11 +1100,17 @@ func (d runItemDelegate) Render(w io.Writer, m list.Model, index int, item list.
 		duration = util.FormatDuration(ri.record.Duration)
 	}
 
-	// Show spinner animation for statuses that represent live progress.
-	spinning := d.spinnerFrame != "" && ri.record.Status.ShouldAnimate(ri.record.EndTime)
-	statusText := statusIcon + " " + ri.record.Status.Label()
+	// Show spinner animation for statuses that represent live progress, and for
+	// a row whose trigger is still waiting on the job's parameters.
+	triggering := d.spinnerFrame != "" && d.triggeringID != "" && ri.record.ID == d.triggeringID
+	spinning := triggering || (d.spinnerFrame != "" && ri.record.Status.ShouldAnimate(ri.record.EndTime))
+	label := ri.record.Status.Label()
+	if triggering {
+		label = "Triggering"
+	}
+	statusText := statusIcon + " " + label
 	if spinning {
-		statusText = d.spinnerFrame + " " + ri.record.Status.Label()
+		statusText = d.spinnerFrame + " " + label
 	}
 	if widths.status <= 2 {
 		statusText = statusIcon

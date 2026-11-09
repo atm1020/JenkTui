@@ -122,6 +122,105 @@ allocations match exactly. The replay time difference is machine load
 renderer (`StyledString.Draw`, then the ultraviolet cell diff) is the larger
 cost.
 
+### Job navigation non-regression (`nav-1`, 2026-11-07)
+
+AMD Ryzen 7 1700X, Go 1.26.8; `nav-1-base` is commit `f675c59`,
+`nav-1-head` is the uncommitted navigation change on that commit. Five
+interleaved 10 s rounds, ten replay samples per side; both sanity checks pass.
+These numbers are not comparable to the i5 reference points above.
+
+| Metric | `nav-1-base` | `nav-1-head` | Verdict |
+| --- | ---: | ---: | --- |
+| Replay | 846 µs/op (712–897) | 777 µs/op (740–863) | ranges-overlap |
+| `Model.View` CPU / 10 s | 200 ms (150–220) | 190 ms (150–210) | ranges-overlap |
+| Renderer CPU / 10 s | 290 ms (280–320) | 280 ms (260–310) | ranges-overlap |
+| Terminal writes/s | 12.29 | 12.29 | negligible |
+
+No measurable rendering difference; renderer cell/ANSI work remains the
+limiter. The navigation claim is instead pinned by request-count tests:
+zero requests before the loading paint, then one job query and one runs query.
+The animation workload does not measure navigation latency.
+
+### Unknown-kind navigation (`nav-2-final`, 2026-11-08)
+
+AMD Ryzen 7 1700X, Go 1.26.8; base is `f675c59`, head is the
+uncommitted nav-1 + nav-2 worktree. Five interleaved 10 s rounds and ten
+replay samples per side; both sanity checks pass. Benchstat was unavailable;
+these are the CLI's median/range verdicts.
+
+| Metric | `nav-2-final-base` | `nav-2-final-head` | Verdict |
+| --- | ---: | ---: | --- |
+| Replay | 787 µs/op (734–914) | 779 µs/op (731–1120) | negligible |
+| `Model.View` CPU / 10 s | 190 ms (140–210) | 170 ms (150–170) | ranges-overlap |
+| Renderer CPU / 10 s | 290 ms (270–320) | 290 ms (280–330) | negligible |
+| Terminal writes/s | 12.29 | 12.29 | negligible |
+
+No measurable rendering difference. Renderer ANSI decoding/cell work remains
+the limiter; this workload does not measure navigation latency. A separate
+150 ms/request fake-Jenkins measurement with a **real poll manager** measured
+My Runs first paint at 157.677 → 1.145 ms and unresolved-class search at
+155.273 → 1.259 ms. Each fell from 5 requests to 4: two job queries and two
+runs queries remain because the page fetch and initial poll are independent.
+The earlier nav-1 request-count test excludes polling. Legacy search's URL
+resolution is separate from classification and is not included in these numbers.
+
+### Trigger feedback (`trigger-1`, 2026-11-08)
+
+AMD Ryzen 7 1700X, Go 1.26.8; base `f675c59`, head is the uncommitted
+nav-1 + nav-2 + trigger-1 worktree. Five interleaved 10 s rounds, ten replay
+samples per side; both sanity checks pass. Benchstat unavailable.
+
+| Metric | `trigger-1-base` | `trigger-1-head` | Verdict |
+| --- | ---: | ---: | --- |
+| Replay | 814 µs/op (764–868) | 763 µs/op (694–802) | ranges-overlap |
+| `Model.View` CPU / 10 s | 170 ms (170–210) | 170 ms (140–190) | negligible |
+| Renderer CPU / 10 s | 280 ms (230–300) | 300 ms (270–340) | ranges-overlap |
+| Terminal writes/s | 12.29 | 12.29 | negligible |
+
+No measurable rendering difference; renderer ANSI/grapheme/cell work remains
+the limiter. This animation workload does not measure trigger latency.
+A separate 150 ms/request message-chain measurement, with a running real poll
+manager (`PollInterval=1h`) and settled initial page demand, measured first
+feedback: job 150.804 → 0.015 ms, completed-build page 151.094 → 0.014 ms,
+My Runs 301.700 → 0.010 ms. Incremental trigger GET counts were 1 → 0,
+1 → 0, and 2 → 1 respectively. Initial job loading still costs four requests
+(two job, two runs); the completed build loads with three and has no active
+run watch. The shared seam reads parameter definitions from the already-polled job.
+
+Superseded 2026-11-08 (same worktree): the footer notice, and the sized
+loading popup that replaced it, are both gone. A resolved page opens its
+trigger dialog on the keypress with no request; My Runs animates the row it
+was pressed on and opens nothing until its one resolve request answers. First
+feedback stays synchronous, so these latency numbers still hold; only where
+the wait is drawn changed. Request counts are unchanged.
+
+### Shared job startup runs (`fetchjob-poll-1-final`, 2026-11-08)
+
+AMD Ryzen 7 1700X, Go 1.26.8; base `f675c59`, head is the uncommitted
+nav-1 + nav-2 + trigger-1 + fetchjob-poll-1 worktree, including routed startup
+failure feedback. Five interleaved 10 s rounds, ten replay samples per side;
+both sanity checks pass. Benchstat unavailable.
+
+| Metric | `fetchjob-poll-1-final-base` | `fetchjob-poll-1-final-head` | Verdict |
+| --- | ---: | ---: | --- |
+| Replay | 838 µs/op (788–1349) | 748 µs/op (740–867) | ranges-overlap |
+| `Model.View` CPU / 10 s | 170 ms (160–220) | 170 ms (140–180) | negligible |
+| Renderer CPU / 10 s | 270 ms (250–290) | 300 ms (270–320) | ranges-overlap |
+| Terminal writes/s | 12.29 | 12.29 | negligible |
+
+No measurable rendering difference; renderer string/cell/grapheme work remains
+the limiter. This workload does not measure startup latency. The separate
+150 ms/request regression harness with a real manager (`PollInterval=1h`)
+measured four requests before (two job, two runs) versus three after (two job,
+one runs with `fullStages=true`). First ready paint now contains stage detail;
+loading waits for both the complete destination job and poll runs state.
+Startup failures are routed by the shell with watch generation identity and
+replace loading with an error/Back hint; a newer successful snapshot recovers.
+There is no timed fallback or additional happy-path runs query.
+The standalone nil-manager path retains one job + one full-stage runs query.
+Earlier navigation/trigger reference counts above describe their historical
+startup behavior before this coordination change.
+
 ### Build page (`--page build`)
 
 | | Baseline `build-115` (two spinner chains) | `build-116` (one frame clock) | `build-117` (placeholder frame cache) | Current `build-sections2` (section cache) |

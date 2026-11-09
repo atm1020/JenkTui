@@ -59,6 +59,7 @@ type Manager struct {
 	executor jobExecutor
 	wake     chan struct{}
 	results  chan workResult
+	clock    clock
 
 	repo                repository
 	windowsMu           sync.Mutex
@@ -97,6 +98,7 @@ func newManager(cfg Config, executor jobExecutor) *Manager {
 		cancel:              cancel,
 		watches:             newWatchRegistry(),
 		executor:            executor,
+		clock:               realClock{},
 		wake:                make(chan struct{}, 1),
 		results:             make(chan workResult, cfg.MaxParallelJobs),
 		windows:             make(map[string]jobWindow),

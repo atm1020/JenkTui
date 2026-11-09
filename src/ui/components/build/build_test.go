@@ -91,6 +91,7 @@ func TestBuildDropsStaleLoadGeneration(t *testing.T) {
 func TestExactRunWatchIsReleasedDuringCleanup(t *testing.T) {
 	var exactRequests atomic.Int32
 	firstRequest := make(chan struct{}, 1)
+	cadenceRequests := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/job/demo/api/json":
@@ -105,6 +106,16 @@ func TestExactRunWatchIsReleasedDuringCleanup(t *testing.T) {
 				"id": "42", "status": "IN_PROGRESS", "stages": []any{},
 				"_links": map[string]any{"self": map[string]string{"href": "/job/demo/42/wfapi/describe"}},
 			})
+		// A second job polled on the same cadence counts poll cycles, so the
+		// test measures scheduler progress instead of waiting on wall time.
+		case "/job/cadence/api/json":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "cadence", "url": "http://" + r.Host + "/job/cadence/"})
+		case "/job/cadence/wfapi/runs/api/json":
+			select {
+			case cadenceRequests <- struct{}{}:
+			default:
+			}
+			_, _ = w.Write([]byte(`[]`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -112,10 +123,12 @@ func TestExactRunWatchIsReleasedDuringCleanup(t *testing.T) {
 	defer server.Close()
 
 	client := gojenkins.CreateJenkins(nil, server.URL)
-	manager := poll.NewManager(client, nil, poll.Config{PollInterval: time.Second})
+	manager := poll.NewManager(client, nil, poll.Config{
+		PollInterval:    20 * time.Millisecond,
+		MaxParallelJobs: 2,
+	})
 	manager.Start()
 	defer manager.Stop()
-	time.Sleep(20 * time.Millisecond)
 	job := &gojenkins.Job{Jenkins: client, Base: "/job/demo", Raw: &gojenkins.JobResponse{URL: server.URL + "/job/demo/"}}
 	model := &Model{
 		ctx:         &appcontext.ProgramContext{PollManager: manager},
@@ -125,11 +138,27 @@ func TestExactRunWatchIsReleasedDuringCleanup(t *testing.T) {
 	_ = model.watchExactRun()
 	select {
 	case <-firstRequest:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("exact-run watch did not start polling")
 	}
 	_ = model.CleanUp()
-	time.Sleep(1100 * time.Millisecond)
+
+	cadence, _, err := manager.Watch(poll.WatchSpec{Target: poll.Target{
+		Kind: poll.TargetJobWindow, JobURL: server.URL + "/job/cadence/",
+	}})
+	if err != nil {
+		t.Fatalf("watch cadence job: %v", err)
+	}
+	defer cadence.Release()
+	// A released watch is due again within one interval, so three cycles of a
+	// live watch leave a leaked exact-run poll no room to hide.
+	for cycle := range 3 {
+		select {
+		case <-cadenceRequests:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("scheduler stalled before cadence poll %d", cycle+1)
+		}
+	}
 	if got := exactRequests.Load(); got != 1 {
 		t.Fatalf("exact requests after cleanup = %d, want 1", got)
 	}
@@ -544,17 +573,17 @@ func TestTriggerBuildKeyFetchesJobParams(t *testing.T) {
 
 	cfg := config.GetDefaultConfig()
 	jenkins := gojenkins.CreateJenkins(nil, server.URL)
+	resolved, err := jenkins.GetJob(stdctx.Background(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
 	m := &Model{
 		ctx:    &appcontext.ProgramContext{Config: cfg, Jenkins: jenkins},
 		build:  &gojenkins.Build{},
 		keyMap: UserKeyMap(cfg.KeyMapConfig.Build),
 		pipelineRun: gojenkins.PipelineRun{
-			ID: "42",
-			Job: &gojenkins.Job{
-				Jenkins: jenkins,
-				Base:    "/job/demo",
-				Raw:     &gojenkins.JobResponse{Name: "demo", URL: server.URL + "/job/demo/"},
-			},
+			ID:  "42",
+			Job: resolved,
 		},
 	}
 
@@ -564,7 +593,7 @@ func TestTriggerBuildKeyFetchesJobParams(t *testing.T) {
 	}
 	msg, ok := cmd().(buildaction.ParamsFetchedMsg)
 	if !ok {
-		t.Fatalf("trigger command produced %T, want buildaction.ParamsFetchedMsg", cmd())
+		t.Fatalf("trigger result = %T, want the parameter result without a loading popup", cmd())
 	}
 	if msg.Error != nil {
 		t.Fatalf("params fetch error = %v, want nil", msg.Error)
@@ -576,7 +605,7 @@ func TestTriggerBuildKeyFetchesJobParams(t *testing.T) {
 
 func TestCleanupInvalidatesTriggerParamsRequest(t *testing.T) {
 	m := &Model{ctx: &appcontext.ProgramContext{Config: config.GetDefaultConfig()}}
-	fetch := m.paramsRequest.Fetch(m.ctx, nil)
+	fetch := m.paramsRequest.Fetch(nil)
 
 	_ = m.CleanUp()
 	_, cmd := m.Update(fetch())

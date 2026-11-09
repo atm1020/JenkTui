@@ -44,7 +44,7 @@ func (m *Manager) runScheduler() {
 	failureAttempts := make(map[string]int)
 	var workers sync.WaitGroup
 
-	timer := time.NewTimer(time.Hour)
+	timer := m.clock.newTimer(time.Hour)
 	stopTimer(timer)
 	var timerC <-chan time.Time
 
@@ -55,7 +55,7 @@ func (m *Manager) runScheduler() {
 			return
 		}
 
-		now := time.Now()
+		now := m.clock.now()
 		reconcileScheduledTargets(scheduled, m.watches.demandsSnapshot(), now)
 		m.cleanupInactiveWindows(scheduled, failureAttempts)
 		m.dispatchDueWork(scheduled, inFlight, now, &workers)
@@ -159,7 +159,7 @@ func (m *Manager) executeWork(work jobWork, workers *sync.WaitGroup) {
 	ctx, cancel := context.WithTimeout(m.ctx, m.config.RequestTimeout)
 	err := m.executor.execute(ctx, work)
 	cancel()
-	result := workResult{work: work, completedAt: time.Now(), err: err}
+	result := workResult{work: work, completedAt: m.clock.now(), err: err}
 
 	select {
 	case m.results <- result:
@@ -213,7 +213,7 @@ func failureRetryDelay(config Config, attempt int) time.Duration {
 }
 
 func resetSchedulerTimer(
-	timer *time.Timer,
+	timer schedulerTimer,
 	scheduled map[Target]scheduledTarget,
 	inFlight map[string]bool,
 	maxParallel int,
@@ -238,16 +238,16 @@ func resetSchedulerTimer(
 	if delay < 0 {
 		delay = 0
 	}
-	timer.Reset(delay)
-	return timer.C
+	timer.reset(delay)
+	return timer.ticks()
 }
 
-func stopTimer(timer *time.Timer) {
-	if timer.Stop() {
+func stopTimer(timer schedulerTimer) {
+	if timer.stop() {
 		return
 	}
 	select {
-	case <-timer.C:
+	case <-timer.ticks():
 	default:
 	}
 }

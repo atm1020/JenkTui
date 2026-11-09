@@ -115,7 +115,7 @@ func TestKnownJobShowsAnimatedLoadersInBothPanels(t *testing.T) {
 
 func TestCleanupInvalidatesTriggerParamsRequest(t *testing.T) {
 	model := &Model{ctx: &context.ProgramContext{Config: config.GetDefaultConfig()}}
-	fetch := model.paramsRequest.Fetch(model.ctx, nil)
+	fetch := model.paramsRequest.Fetch(nil)
 
 	_ = model.CleanUp()
 	_, cmd := model.Update(fetch())
@@ -230,6 +230,7 @@ func TestCleanupDoesNotCancelInFlightTrigger(t *testing.T) {
 func TestJobWindowWatchIsReleasedDuringCleanup(t *testing.T) {
 	var runRequests atomic.Int32
 	firstRequest := make(chan struct{}, 1)
+	cadenceRequests := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/job/demo/api/json":
@@ -241,16 +242,28 @@ func TestJobWindowWatchIsReleasedDuringCleanup(t *testing.T) {
 			default:
 			}
 			_, _ = w.Write([]byte(`[]`))
+		// A second job polled on the same cadence counts poll cycles, so the
+		// test measures scheduler progress instead of waiting on wall time.
+		case "/job/cadence/api/json":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "cadence", "url": serverURL(r) + "/job/cadence/"})
+		case "/job/cadence/wfapi/runs/api/json":
+			select {
+			case cadenceRequests <- struct{}{}:
+			default:
+			}
+			_, _ = w.Write([]byte(`[]`))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
 
-	manager := poll.NewManager(gojenkins.CreateJenkins(nil, server.URL), nil, poll.Config{PollInterval: time.Second})
+	manager := poll.NewManager(gojenkins.CreateJenkins(nil, server.URL), nil, poll.Config{
+		PollInterval:    20 * time.Millisecond,
+		MaxParallelJobs: 2,
+	})
 	manager.Start()
 	defer manager.Stop()
-	time.Sleep(20 * time.Millisecond)
 
 	model := &Model{
 		ctx:    &context.ProgramContext{PollManager: manager},
@@ -259,12 +272,28 @@ func TestJobWindowWatchIsReleasedDuringCleanup(t *testing.T) {
 	_ = model.watchJobWindow()
 	select {
 	case <-firstRequest:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("job watch did not start polling")
 	}
 
 	_ = model.CleanUp()
-	time.Sleep(1100 * time.Millisecond)
+
+	cadence, _, err := manager.Watch(poll.WatchSpec{Target: poll.Target{
+		Kind: poll.TargetJobWindow, JobURL: server.URL + "/job/cadence/",
+	}})
+	if err != nil {
+		t.Fatalf("watch cadence job: %v", err)
+	}
+	defer cadence.Release()
+	// A released watch is due again within one interval, so three cycles of a
+	// live watch leave a leaked job-window poll no room to hide.
+	for cycle := range 3 {
+		select {
+		case <-cadenceRequests:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("scheduler stalled before cadence poll %d", cycle+1)
+		}
+	}
 	if got := runRequests.Load(); got != 1 {
 		t.Fatalf("run requests after cleanup = %d, want 1", got)
 	}
