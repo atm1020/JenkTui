@@ -183,7 +183,9 @@ home again, run `down` and `up`.
 
 Closing dialogs: search, theme, and server dialogs close with `ctrl+c`
 (inside a dialog, it closes only the dialog). Build params and artifacts
-close with `esc`, as do the confirm and error dialogs. Outside a dialog,
+close with `esc`, as do the confirm and error dialogs. Error dialogs with captured
+HTML offer `y` to copy it (config: `key_map.dialogs.error.copy_html`); this writes
+the clipboard and may expose sensitive data. See [error details](features/error-details.md). Outside a dialog,
 `ctrl+c` **quits the app**. Run `doctor` after any `ctrl+c` you are unsure
 about.
 

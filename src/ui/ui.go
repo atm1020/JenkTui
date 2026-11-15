@@ -613,7 +613,7 @@ func (a *App) handleJenkinsInitError(msg JenkinsInitErrMsg) tea.Cmd {
 func (a *App) handleError(msg util.ErrorMsg) tea.Cmd {
 	log.Error("Error message received in UI:", "title", msg.Title, "error", msg.Error)
 	// Show error as a dialog overlay.
-	cleanup := a.replaceDialog(errorpage.NewModel(msg.Error, msg.Title, a.wWidth, a.wHeight))
+	cleanup := a.replaceDialog(errorpage.NewModel(msg.Error, msg.Title, a.wWidth, a.wHeight, a.ctx.Config.KeyMapConfig.Dialog.Error))
 	return tea.Batch(cleanup, a.dialog.Init())
 }
 

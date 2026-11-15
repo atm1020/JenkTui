@@ -69,6 +69,7 @@ sub-feature or optional external effect below.
 
 | Surfaces | Recipe |
 |---|---|
+| Shared error dialog + explicit HTML copy | [error-details.md](./error-details.md) |
 | Home splash | [home-theme-help.md](./home-theme-help.md) |
 | Global search dialog | [search-and-browse.md](./search-and-browse.md) |
 | Folder listing | [search-and-browse.md](./search-and-browse.md) |

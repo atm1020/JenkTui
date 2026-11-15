@@ -64,6 +64,10 @@ func getDefaultKeyMapConfig() context.KeyMapConfig {
 			Favorites:      context.KeyBinding{"f"},
 		},
 		Dialog: context.DialogKeyMapConfig{
+			Error: context.ErrorDialogKeyMapConfig{
+				CopyHTML: context.KeyBinding{"y"},
+				Close:    context.KeyBinding{"esc"},
+			},
 			Globalsearch: context.GlobalsearchDialogKeyMapConfig{
 				Help:        context.KeyBinding{"ctrl+g"},
 				Quit:        context.KeyBinding{"ctrl+c"},

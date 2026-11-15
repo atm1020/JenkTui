@@ -9,7 +9,7 @@ Examples:
   go run ./dev/perf doctor
 `
 
-const measureFlags = `  --page P           workload: job (default), build, or setup
+const measureFlags = `  --page P           workload: job (default), build, setup, or error
   --rounds N         rounds; each = 1 benchmark batch + 1 live profile (default 5)
   --bench-count N    benchmark samples per round (default 2 -> 10 samples)
   --benchtime T      go -benchtime (default 1s)
