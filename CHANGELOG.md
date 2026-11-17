@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.0-beta.3](https://github.com/atm1020/JenkTui/compare/v1.0.0-beta.2...v1.0.0-beta.3) (2026-11-17)
+
+
+### Features
+
+* copy captured Jenkins HTML error responses ([9081ef8](https://github.com/atm1020/JenkTui/commit/9081ef8cb4955f64c9d115ad09d6e0ead0f0d6ca))
+* copy captured Jenkins HTML error responses ([b658c7d](https://github.com/atm1020/JenkTui/commit/b658c7d63348ebb7731659309feb3ebedad81e9d))
+
 ## [1.0.0-beta.2](https://github.com/atm1020/JenkTui/compare/v1.0.0-beta.1...v1.0.0-beta.2) (2026-11-09)
 
 
