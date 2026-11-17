@@ -107,6 +107,11 @@ type ConfirmDialogKeyMapConfig struct {
 	Close     KeyBinding `json:"close"`
 }
 
+type ErrorDialogKeyMapConfig struct {
+	CopyHTML KeyBinding `json:"copy_html"`
+	Close    KeyBinding `json:"close"`
+}
+
 type ParamsViewDialogKeyMapConfig struct {
 	Close KeyBinding `json:"close"`
 }
@@ -138,6 +143,7 @@ type ArtifactSelectorDialogKeyMapConfig struct {
 }
 
 type DialogKeyMapConfig struct {
+	Error            ErrorDialogKeyMapConfig            `json:"error"`
 	Globalsearch     GlobalsearchDialogKeyMapConfig     `json:"global_search"`
 	ThemeSelector    ThemeSelectorDialogKeyMapConfig    `json:"theme_selector"`
 	NodeSelector     NodeSelectorDialogKeyMapConfig     `json:"node_selector"`

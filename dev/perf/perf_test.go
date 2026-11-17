@@ -294,6 +294,16 @@ func TestParseArgsErrors(t *testing.T) {
 	}
 }
 
+func TestErrorDialogWorkloadRegistration(t *testing.T) {
+	o := measureOpts{pageName: "error", rounds: 1, benchCount: 1, duration: 1e9}
+	if err := o.validate(); err != nil {
+		t.Fatal(err)
+	}
+	if o.page.pkg != "./src/ui/components/dialogs/errorpage" || o.page.benchmark != "BenchmarkErrorDialogResizeFrame" || o.page.profileTest != "TestErrorDialogProfile" {
+		t.Fatalf("wrong error workload: %+v", o.page)
+	}
+}
+
 func TestMeasureOptsValidate(t *testing.T) {
 	for _, o := range []measureOpts{
 		{rounds: 0, benchCount: 1, duration: 1e9},

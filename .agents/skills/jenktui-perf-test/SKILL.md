@@ -24,6 +24,7 @@ go run ./dev/perf capture my-change                        # one side only
 go run ./dev/perf summary my-change                        # re-read a capture
 go run ./dev/perf compare job-113 my-change --json         # any two captures
 go run ./dev/perf ab my-change --base HEAD --page build    # build-page workload instead of the job page
+go run ./dev/perf capture error-dialog --page error        # HTML error dialog resize workload
 go run ./dev/perf list
 ```
 
@@ -35,7 +36,16 @@ a counting sink. It needs no Jenkins, no TTY, and no personal config.
 `newAnimationPage` in `src/ui/components/job/animation_bench_test.go` defines
 it. `--page build` measures `build-animation-v1` instead: a 160×50 build page
 with a running stage and step, defined by `newAnimationPage` in
-`src/ui/components/build/animation_workload_test.go`. Each round runs:
+`src/ui/components/build/animation_workload_test.go`. `--page error` measures `error-dialog-resize-v1`: a dialog retaining a synthetic
+256 KiB HTML response, with alternating 150/160-column resize input every 100 ms.
+`BenchmarkErrorDialogResizeFrame` measures one resize Update/View pair;
+`TestErrorDialogProfile` uses the shared harness. The HTML is not rendered or
+copied. This workload is not comparable to job/build animation or idle-dialog
+profiles; check its visible-frame regression test before trusting captures.
+A baseline predating this workload cannot provide an error-page A/B; capture
+it separately and use the existing job workload for a broad non-regression A/B.
+
+Each round runs:
 
 - **Replay benchmark** `BenchmarkJobPageAnimationFrame`: ns/B/allocs per
   Update/View frame. This is the micro number.

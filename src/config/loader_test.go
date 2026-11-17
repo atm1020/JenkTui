@@ -144,6 +144,16 @@ func TestMergeKeyMapConfig(t *testing.T) {
 	}
 }
 
+func TestMergeErrorDialogKeys(t *testing.T) {
+	user := context.KeyMapConfig{Dialog: context.DialogKeyMapConfig{
+		Error: context.ErrorDialogKeyMapConfig{CopyHTML: kb("c")},
+	}}
+	mergeKeyMapConfig(&user, getDefaultKeyMapConfig())
+	if !reflect.DeepEqual(user.Dialog.Error.CopyHTML, kb("c")) || !reflect.DeepEqual(user.Dialog.Error.Close, kb("esc")) {
+		t.Fatalf("error dialog bindings = %+v", user.Dialog.Error)
+	}
+}
+
 func TestMergeKeyMapConfigMigratesMyRunsOpenJobDefault(t *testing.T) {
 	userCfg := context.KeyMapConfig{MyRuns: context.MyRunsKeyMapConfig{OpenJob: kb("o")}}
 	defaults := getDefaultKeyMapConfig()

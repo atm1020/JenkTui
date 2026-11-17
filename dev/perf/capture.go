@@ -30,6 +30,7 @@ type page struct {
 }
 
 var pages = map[string]page{
+	"error": {name: "error", pkg: "./src/ui/components/dialogs/errorpage", benchmark: "BenchmarkErrorDialogResizeFrame", profileTest: "TestErrorDialogProfile"},
 	"setup": {name: "setup", pkg: "./src/ui/components/dialogs/serversetup", benchmark: "BenchmarkServerSetupFrame", profileTest: "TestServerSetupProfile"},
 	"job": {
 		name: "job", pkg: "./src/ui/components/job",
@@ -77,7 +78,7 @@ func addMeasureFlags(fs *flag.FlagSet, o *measureOpts) {
 func (o *measureOpts) validate() error {
 	p, ok := pages[o.pageName]
 	if !ok {
-		return usageErr(fmt.Sprintf("unknown --page %q (job, build, setup)", o.pageName), "go run ./dev/perf capture my-change --page build")
+		return usageErr(fmt.Sprintf("unknown --page %q (job, build, setup, error)", o.pageName), "go run ./dev/perf capture my-change --page build")
 	}
 	o.page = p
 	if o.quick {

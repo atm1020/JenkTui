@@ -30,6 +30,7 @@
 * Favorites for jobs, multibranch pipelines, and folders
 * Built-in themes, plus custom JSON themes
 * Configurable keybindings
+* Error dialogs can copy captured HTML responses with `y` when the Jenkins client supplies diagnostics. HTML is kept only in memory, capped at 256 KiB, and may contain sensitive information—review it before sharing.
 
 ## Installation
 
@@ -242,6 +243,10 @@ The filename without `.json` is the theme name. A file whose name matches a buil
         "yes": ["y", "Y"],
         "no": ["n", "N"],
         "tab": ["tab"],
+        "close": ["esc"]
+      },
+      "error": {
+        "copy_html": ["y"],
         "close": ["esc"]
       },
       "params_view": {
