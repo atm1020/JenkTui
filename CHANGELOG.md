@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.0-beta.4](https://github.com/atm1020/JenkTui/compare/v1.0.0-beta.3...v1.0.0-beta.4) (2026-11-20)
+
+
+### Bug Fixes
+
+* API-token trigger and replay 404s ([5879f85](https://github.com/atm1020/JenkTui/commit/5879f85fb7a3cc1d59329d668fa5212d763f2f1e))
+* restore API-token trigger and replay crumb preflight ([bbbbb17](https://github.com/atm1020/JenkTui/commit/bbbbb17de71ebeeac49f64f735fef94662a32ae8))
+
 ## [1.0.0-beta.3](https://github.com/atm1020/JenkTui/compare/v1.0.0-beta.2...v1.0.0-beta.3) (2026-11-17)
 
 
