@@ -30,7 +30,7 @@ func abortServer(t *testing.T, running bool, stopStatus int) (*httptest.Server, 
 			_ = json.NewEncoder(w).Encode(map[string]any{"name": "demo", "url": "http://" + request.Host + "/job/demo/"})
 		case path == "/job/demo/42/api/json":
 			_ = json.NewEncoder(w).Encode(map[string]any{"number": 42, "building": running})
-		case strings.HasPrefix(path, "/crumbIssuer/api/json"):
+		case path == "/crumbIssuer/api/json":
 			_ = json.NewEncoder(w).Encode(map[string]string{})
 		case request.Method == http.MethodPost && path == "/job/demo/42/stop":
 			stopped = true
