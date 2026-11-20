@@ -177,7 +177,7 @@ func TestCleanupDoesNotCancelInFlightTrigger(t *testing.T) {
 		switch {
 		case request.URL.Path == "/job/demo/api/json":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name": "demo", "url": "http://" + request.Host + "/job/demo/"})
-		case strings.HasPrefix(request.URL.Path, "/crumbIssuer/api/json"):
+		case request.URL.Path == "/crumbIssuer/api/json":
 			_ = json.NewEncoder(w).Encode(map[string]string{})
 		case request.Method == http.MethodPost && request.URL.Path == "/job/demo/build":
 			postOnce.Do(func() {

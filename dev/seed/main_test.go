@@ -42,7 +42,7 @@ func TestSeedFolders(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
-				case strings.HasPrefix(r.URL.Path, "/crumbIssuer/"):
+				case r.URL.Path == "/crumbIssuer/api/json":
 					fmt.Fprint(w, `{}`)
 				case strings.HasSuffix(r.URL.Path, "/createItem"):
 					creates++

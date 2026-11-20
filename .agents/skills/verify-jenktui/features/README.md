@@ -69,6 +69,7 @@ sub-feature or optional external effect below.
 
 | Surfaces | Recipe |
 |---|---|
+| API-token trigger/replay crumb preflight + strict routing | [crumb-preflight.md](./crumb-preflight.md) |
 | Shared error dialog + explicit HTML copy | [error-details.md](./error-details.md) |
 | Home splash | [home-theme-help.md](./home-theme-help.md) |
 | Global search dialog | [search-and-browse.md](./search-and-browse.md) |
