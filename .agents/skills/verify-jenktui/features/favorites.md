@@ -15,7 +15,8 @@ returns `0` via `jt db`, and capture the initial screen with `jt snap`.
    picker above the results and ends with Favorites at the right edge. The
    command row below the results still shows `S switch scope`. With the input
    focused, no row is highlighted. Press Enter to focus and highlight the
-   first row without opening it, then Tab to return to the input.
+   first row without opening it. Verify the footer shows `enter navigate` and
+   `r go to run history`, then Tab to return to the input.
 2. Type `DevTeam/Frontend` without Enter; `mobile-app` should still match.
    Snap the picker. Verify `url`, `server_id`, and `kind` in `favorites`; expect
    `/job/DevTeam/job/Frontend/job/mobile-app/`, `local`, `job`.

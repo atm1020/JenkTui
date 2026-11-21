@@ -45,6 +45,12 @@ profiles; check its visible-frame regression test before trusting captures.
 A baseline predating this workload cannot provide an error-page A/B; capture
 it separately and use the existing job workload for a broad non-regression A/B.
 
+`--page palette` measures `command-palette-filter-v1`: a 100×30 dialog
+alternating a fuzzy alias query and an empty query every 100 ms.
+`BenchmarkPaletteFrame` measures one filter Update/View pair; `TestPaletteProfile`
+uses the shared harness. Capture this standalone when the baseline predates
+it, and use the job workload for A/B.
+
 Each round runs:
 
 - **Replay benchmark** `BenchmarkJobPageAnimationFrame`: ns/B/allocs per

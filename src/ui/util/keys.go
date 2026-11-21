@@ -14,6 +14,7 @@ type GlobalKeyMap struct {
 	Back           key.Binding
 	Forward        key.Binding
 	GlobalSearch   key.Binding
+	CommandPalette key.Binding
 	ThemeSelector  key.Binding
 	ServerSelector key.Binding
 	MyRuns         key.Binding
@@ -47,6 +48,10 @@ func UserKeyMap(conf context.KeyMapConfig) GlobalKeyMap {
 			key.WithKeys(g.Globalsearch...),
 			key.WithHelp(g.Globalsearch.HelpText(), "global search"),
 		),
+		CommandPalette: key.NewBinding(
+			key.WithKeys(g.CommandPalette...),
+			key.WithHelp(g.CommandPalette.HelpText(), "commands"),
+		),
 		ThemeSelector: key.NewBinding(
 			key.WithKeys(g.ThemeSelector...),
 			key.WithHelp(g.ThemeSelector.HelpText(), "change theme"),
@@ -75,23 +80,23 @@ func (k GlobalKeyMap) ShortHelp() []key.Binding {
 func (k GlobalKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Quit, k.HelpToggle, k.Help},
-		{k.Back, k.Forward, k.GlobalSearch},
+		{k.Back, k.Forward, k.GlobalSearch, k.CommandPalette},
 		{k.ThemeSelector, k.ServerSelector, k.MyRuns, k.Favorites},
 	}
 }
 
-// LocalWithHint appends a hint binding (e.g. ctrl+g "more") to the local KeyMap.
-type LocalWithHint struct {
+// LocalWithHints combines local help with global hints.
+type LocalWithHints struct {
 	Local help.KeyMap
-	Hint  key.Binding
+	Hints []key.Binding
 }
 
-func (l LocalWithHint) ShortHelp() []key.Binding {
-	return append(l.Local.ShortHelp(), l.Hint)
+func (l LocalWithHints) ShortHelp() []key.Binding {
+	return append(l.Local.ShortHelp(), l.Hints...)
 }
 
-func (l LocalWithHint) FullHelp() [][]key.Binding {
-	return append(l.Local.FullHelp(), []key.Binding{l.Hint})
+func (l LocalWithHints) FullHelp() [][]key.Binding {
+	return append(l.Local.FullHelp(), l.Hints)
 }
 
 // MergedViewKeyMap combines two local KeyMaps (e.g. a parent view + sub-component).

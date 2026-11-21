@@ -130,7 +130,7 @@ func GetSearchResultKeyMap() SearchResultKeyMap {
 		),
 		Select: key.NewBinding(
 			key.WithKeys("enter"),
-			key.WithHelp("enter", "select"),
+			key.WithHelp("enter", "navigate"),
 		),
 		Filter: key.NewBinding(
 			key.WithKeys("/"),
@@ -203,7 +203,7 @@ func UserSearchResultKeyMap(conf context.GlobalsearchDialogKeyMapConfig) SearchR
 		),
 		Select: key.NewBinding(
 			key.WithKeys(conf.Select...),
-			key.WithHelp(conf.Select.HelpText(), "select"),
+			key.WithHelp(conf.Select.HelpText(), "navigate"),
 		),
 		Filter: key.NewBinding(
 			key.WithKeys(conf.Filter...),

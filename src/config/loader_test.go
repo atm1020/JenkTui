@@ -70,6 +70,7 @@ func TestMergeKeyMapConfig(t *testing.T) {
 				defaults := getDefaultKeyMapConfig()
 				defaults.Global = context.GlobalKeyMapConfig{
 					Globalsearch:   kb("ctrl+s"),
+					CommandPalette: kb("alt+k"),
 					Back:           kb("esc"),
 					Forward:        kb("F2"),
 					Quit:           kb("q"),
@@ -96,12 +97,15 @@ func TestMergeKeyMapConfig(t *testing.T) {
 					Select:      kb("space"),
 					Filter:      kb("ctrl+f"),
 				}
+				defaults.Dialog.CommandPalette.Close = kb("ctrl+q")
 				return defaults
 			}(),
 			expected: func() context.KeyMapConfig {
 				defaults := getDefaultKeyMapConfig()
+				defaults.Dialog.CommandPalette.Close = kb("ctrl+q")
 				defaults.Global = context.GlobalKeyMapConfig{
 					Globalsearch:   kb("ctrl+s"),
+					CommandPalette: kb("alt+k"),
 					Back:           kb("esc"),
 					Forward:        kb("F2"),
 					Quit:           kb("q"),
@@ -278,7 +282,7 @@ func TestDefaultConfigJSONUsesSnakeCaseCompoundKeys(t *testing.T) {
 	}
 	encoded := string(data)
 
-	for _, key := range []string{"global_search", "log_viewer", "script_view"} {
+	for _, key := range []string{"global_search", "command_palette", "log_viewer", "script_view"} {
 		if !strings.Contains(encoded, `"`+key+`"`) {
 			t.Errorf("marshaled config does not contain %q", key)
 		}

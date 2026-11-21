@@ -72,13 +72,14 @@ sub-feature or optional external effect below.
 | API-token trigger/replay crumb preflight + strict routing | [crumb-preflight.md](./crumb-preflight.md) |
 | Shared error dialog + explicit HTML copy | [error-details.md](./error-details.md) |
 | Home splash | [home-theme-help.md](./home-theme-help.md) |
+| Command palette, notification-style popup, chooser styling, shortcuts, and action dispatch | [command-palette.md](./command-palette.md) |
 | Global search dialog | [search-and-browse.md](./search-and-browse.md) |
 | Folder listing | [search-and-browse.md](./search-and-browse.md) |
 | Job page + shared poll startup / failure / replay / unsupported-kind states | [job-and-build.md](./job-and-build.md) |
 | Build page + step log (`ctrl+l`) | [job-and-build.md](./job-and-build.md) |
 | Console log viewer | [log-viewer.md](./log-viewer.md) |
 | Trigger loading feedback + confirm + My Runs | [trigger-and-my-runs.md](./trigger-and-my-runs.md) |
-| Favorites scope, result focus, and saved items | [favorites.md](./favorites.md) |
+| Favorites scope, navigation hints, result focus, and saved items | [favorites.md](./favorites.md) |
 | Build form, artifacts/open-folder confirmation, replay, cancellation | [build-actions.md](./build-actions.md) |
 | Server picker, add/edit setup, private-CA test/save | [server-selector.md](./server-selector.md) |
 
