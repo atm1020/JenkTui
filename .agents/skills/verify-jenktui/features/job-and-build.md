@@ -32,7 +32,7 @@ and its stages, each with a status and duration.
   necessarily all output from that stage. The footer **stays** at
   `…mobile-app  N` (no `console`).
 - `build-help`: `?` expands the footer into the full key list for the page.
-- `build-params`: `P` shows build parameters, or `No parameters used for
+- `build-params`: `p` shows build parameters, or `No parameters used for
   this build` when empty.
 
 ## How to get to it (user POV)

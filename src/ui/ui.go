@@ -20,12 +20,11 @@ import (
 	colortheme "github.com/atm1020/jenktui/src/theme"
 	"github.com/atm1020/jenktui/src/ui/buildaction"
 	"github.com/atm1020/jenktui/src/ui/components/build"
+	"github.com/atm1020/jenktui/src/ui/components/dialogs/commandpalette"
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/errorpage"
-	"github.com/atm1020/jenktui/src/ui/components/dialogs/globalsearch"
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/serverselector"
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/serversetup"
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/themeselector"
-	"github.com/atm1020/jenktui/src/ui/components/favorites"
 	"github.com/atm1020/jenktui/src/ui/components/flowlogviewer"
 	"github.com/atm1020/jenktui/src/ui/components/folder"
 	"github.com/atm1020/jenktui/src/ui/components/footer"
@@ -33,7 +32,6 @@ import (
 	"github.com/atm1020/jenktui/src/ui/components/home"
 	"github.com/atm1020/jenktui/src/ui/components/job"
 	"github.com/atm1020/jenktui/src/ui/components/joblog"
-	"github.com/atm1020/jenktui/src/ui/components/myruns"
 	"github.com/atm1020/jenktui/src/ui/components/scriptview"
 	"github.com/atm1020/jenktui/src/ui/router"
 	"github.com/atm1020/jenktui/src/ui/styles"
@@ -371,6 +369,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleOpenDialog(msg)
 	case util.CloseDialogMsg:
 		return a, a.handleCloseDialog(msg)
+	case commandpalette.SelectedMsg:
+		return a, a.handlePaletteSelection(msg)
 	case serverselector.SelectedMsg:
 		return a, a.selectServer(msg.Server)
 	case serverselector.SetupMsg:
@@ -653,8 +653,6 @@ func (a *App) updateComponents(msg tea.Msg) tea.Cmd {
 }
 
 func (a *App) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
-	var cmds []tea.Cmd
-
 	if a.dialog != nil {
 		var cmd tea.Cmd
 		a.dialog, cmd = a.dialog.Update(msg)
@@ -679,31 +677,22 @@ func (a *App) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 	}
 
 	if key.Matches(msg, a.keyMap.GlobalSearch) {
-		cmds = append(cmds, a.replaceDialog(globalsearch.NewGlobalSearchDialogCmp(a.ctx, a.wWidth, a.wHeight)), a.dialog.Init())
+		return a.runAppAction(commandpalette.SearchJenkins)
 	}
-
+	if key.Matches(msg, a.keyMap.CommandPalette) {
+		return a.openCommandPalette()
+	}
 	if key.Matches(msg, a.keyMap.ThemeSelector) {
-		// Re-scan custom files each time, matching cliamp's picker behavior. The
-		// command keeps filesystem work out of Update.
-		cmds = append(cmds, loadThemeDefinitions(a.ctx.ConfigDir))
+		return a.runAppAction(commandpalette.ChangeTheme)
 	}
-
 	if key.Matches(msg, a.keyMap.ServerSelector) {
-		cmds = append(cmds, a.replaceDialog(a.newServerSelectorDialog()), a.dialog.Init())
+		return a.runAppAction(commandpalette.SwitchServer)
 	}
-
 	if key.Matches(msg, a.keyMap.MyRuns) {
-		model := myruns.NewModel(a.ctx, a.wWidth, a.wHeight)
-		if provider, ok := a.router.CurrentView().(interface{ RunHistoryQuery() store.RunQuery }); ok {
-			model = myruns.NewModelWithQuery(a.ctx, a.wWidth, a.wHeight, provider.RunHistoryQuery())
-		}
-		return util.CmdHandler(router.NavigateMsg{Model: model})
+		return a.runAppAction(commandpalette.MyRuns)
 	}
-
 	if key.Matches(msg, a.keyMap.Favorites) {
-		return util.CmdHandler(router.NavigateMsg{
-			Model: favorites.NewModel(a.ctx, a.wWidth, a.wHeight),
-		})
+		return a.runAppAction(commandpalette.Favorites)
 	}
 
 	if key.Matches(msg, a.keyMap.Back) {
@@ -716,34 +705,29 @@ func (a *App) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 
 	if key.Matches(msg, a.keyMap.HelpToggle) {
 		if a.helpLevel == HelpHidden {
-			a.helpLevel = HelpLocal
-		} else {
-			a.helpLevel = HelpHidden
+			return a.setHelpLevel(HelpLocal)
 		}
-		a.help.ShowAll = a.helpLevel != HelpHidden
-		return util.CmdHandler(tea.WindowSizeMsg{
-			Width:  a.wWidth,
-			Height: a.maxHeight,
-		})
+		return a.setHelpLevel(HelpHidden)
 	}
 
 	if key.Matches(msg, a.keyMap.Help) {
 		switch a.helpLevel {
 		case HelpLocal:
-			a.helpLevel = HelpFull
+			return a.runAppAction(commandpalette.Help)
 		case HelpFull:
-			a.helpLevel = HelpLocal
+			return a.setHelpLevel(HelpLocal)
 		default:
 			return nil
 		}
-		return util.CmdHandler(tea.WindowSizeMsg{
-			Width:  a.wWidth,
-			Height: a.maxHeight,
-		})
 	}
 
-	cmds = append(cmds, a.router.Update(msg))
-	return tea.Batch(cmds...)
+	return a.router.Update(msg)
+}
+
+func (a *App) setHelpLevel(level HelpLevel) tea.Cmd {
+	a.helpLevel = level
+	a.help.ShowAll = level != HelpHidden
+	return util.CmdHandler(tea.WindowSizeMsg{Width: a.wWidth, Height: a.maxHeight})
 }
 
 func (a *App) handleWindowResize(msg tea.WindowSizeMsg) tea.Cmd {
@@ -1046,5 +1030,9 @@ func (a *App) helpKeyMap() help.KeyMap {
 	if a.helpLevel == HelpFull {
 		return util.MergedKeyMap{Local: localKM, Global: a.keyMap}
 	}
-	return util.LocalWithHint{Local: localKM, Hint: a.keyMap.Help}
+	hints := []key.Binding{a.keyMap.Help}
+	if a.dialog == nil {
+		hints = append(hints, a.keyMap.CommandPalette)
+	}
+	return util.LocalWithHints{Local: localKM, Hints: hints}
 }

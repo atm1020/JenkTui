@@ -39,6 +39,7 @@ type KeyMap struct{}
 // Global keymaps
 type GlobalKeyMapConfig struct {
 	Globalsearch   KeyBinding `json:"global_search"`
+	CommandPalette KeyBinding `json:"command_palette"`
 	Back           KeyBinding `json:"back"`
 	Forward        KeyBinding `json:"forward"`
 	Quit           KeyBinding `json:"quit"`
@@ -65,6 +66,13 @@ type GlobalsearchDialogKeyMapConfig struct {
 	PrevPage    KeyBinding `json:"prev_page"`
 	Select      KeyBinding `json:"select"`
 	Filter      KeyBinding `json:"filter"`
+}
+
+type CommandPaletteDialogKeyMapConfig struct {
+	Select KeyBinding `json:"select"`
+	Up     KeyBinding `json:"up"`
+	Down   KeyBinding `json:"down"`
+	Close  KeyBinding `json:"close"`
 }
 
 type ThemeSelectorDialogKeyMapConfig struct {
@@ -145,6 +153,7 @@ type ArtifactSelectorDialogKeyMapConfig struct {
 type DialogKeyMapConfig struct {
 	Error            ErrorDialogKeyMapConfig            `json:"error"`
 	Globalsearch     GlobalsearchDialogKeyMapConfig     `json:"global_search"`
+	CommandPalette   CommandPaletteDialogKeyMapConfig   `json:"command_palette"`
 	ThemeSelector    ThemeSelectorDialogKeyMapConfig    `json:"theme_selector"`
 	NodeSelector     NodeSelectorDialogKeyMapConfig     `json:"node_selector"`
 	ServerSelector   ServerSelectorDialogKeyMapConfig   `json:"server_selector"`

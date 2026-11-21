@@ -53,6 +53,7 @@ func getDefaultKeyMapConfig() context.KeyMapConfig {
 	return context.KeyMapConfig{
 		Global: context.GlobalKeyMapConfig{
 			Globalsearch:   context.KeyBinding{"ctrl+p"},
+			CommandPalette: context.KeyBinding{"P"},
 			Back:           context.KeyBinding{"b"},
 			Forward:        context.KeyBinding{"]"},
 			Quit:           context.KeyBinding{"ctrl+c"},
@@ -82,6 +83,12 @@ func getDefaultKeyMapConfig() context.KeyMapConfig {
 				PrevPage:    context.KeyBinding{"h"},
 				Select:      context.KeyBinding{"enter"},
 				Filter:      context.KeyBinding{"/"},
+			},
+			CommandPalette: context.CommandPaletteDialogKeyMapConfig{
+				Select: context.KeyBinding{"enter"},
+				Up:     context.KeyBinding{"up"},
+				Down:   context.KeyBinding{"down"},
+				Close:  context.KeyBinding{"esc", "ctrl+c"},
 			},
 			ThemeSelector: context.ThemeSelectorDialogKeyMapConfig{
 				Select: context.KeyBinding{"enter"},
@@ -208,7 +215,7 @@ func getDefaultKeyMapConfig() context.KeyMapConfig {
 			CopyNode:             context.KeyBinding{"n"},
 			OpenJob:              context.KeyBinding{"ctrl+j"},
 			Replay:               context.KeyBinding{"r"},
-			ShowParams:           context.KeyBinding{"P"},
+			ShowParams:           context.KeyBinding{"p"},
 			OpenBuildBrowser:     context.KeyBinding{"o"},
 			OpenJobBrowser:       context.KeyBinding{"O"},
 			TriggerBuild:         context.KeyBinding{"ctrl+b"},

@@ -24,7 +24,8 @@
 * Trigger, replay, and abort builds
 * Pipeline stages and artifact downloads
 * Console log viewer with incremental loading and search, built for large logs
-* Global search using Jenkins's built-in search
+* Global search using Jenkins's built-in search (`Ctrl+P`)
+* Command palette (`P`, uppercase): type an action or alias, use the arrows to choose, then press Enter. Try `appearance` to open the theme picker.
 * My Runs history of builds you trigger
 * Optional desktop notifications when your builds end
 * Favorites for jobs, multibranch pipelines, and folders
@@ -185,6 +186,7 @@ The filename without `.json` is the theme name. A file whose name matches a buil
   "key_map": {
     "global": {
       "global_search": ["ctrl+p"],
+      "command_palette": ["P"],
       "back": ["b"],
       "forward": ["]"],
       "quit": ["ctrl+c"],
@@ -196,6 +198,12 @@ The filename without `.json` is the theme name. A file whose name matches a buil
       "favorites": ["f"]
     },
     "dialogs": {
+      "command_palette": {
+        "select": ["enter"],
+        "up": ["up"],
+        "down": ["down"],
+        "close": ["esc", "ctrl+c"]
+      },
       "global_search": {
         "help": ["ctrl+g"],
         "quit": ["ctrl+c"],
@@ -304,7 +312,7 @@ The filename without `.json` is the theme name. A file whose name matches a buil
       "copy_node": ["n"],
       "open_job": ["ctrl+j"],
       "replay": ["r"],
-      "show_params": ["P"],
+      "show_params": ["p"],
       "open_build_browser": ["o"],
       "open_job_browser": ["O"],
       "trigger_build": ["ctrl+b"],

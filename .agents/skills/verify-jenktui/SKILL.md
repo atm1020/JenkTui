@@ -157,7 +157,7 @@ Stable handles to wait on:
   spacing.
 - **Footer toast** (right side of the bottom row): e.g. `Added to favorites`,
   `Build triggered`.
-- **View headers**: `Global Search` (the search box placeholder; it
+- **View headers**: `Command Palette` (`P`; configurable via `key_map.global.command_palette`), `Global Search` (the search box placeholder; it
   disappears once a query is typed, so wait for it only right after `C-p`
   or `C-r`), `Health Score` or
   `No health report available` (job page), `Build #<n>` (build page),
@@ -171,7 +171,7 @@ active dialogs and text-input modes can intercept global keys):
   `f` Favorites, `ctrl+s` server, `ctrl+t` theme, `?` help, `ctrl+c` quit
 - **Job:** `enter` build, `L` log, `ctrl+b` trigger, `r` replay, `x` cancel,
   `F` favorite, `B`/`S` builds/stages pane
-- **Build:** `h`/`l` stage, `ctrl+l` step log, `L` full log, `P` params,
+- **Build:** `h`/`l` stage, `ctrl+l` step log, `L` full log, `p` params,
   `d`/`D` artifacts, `ctrl+j` job
 
 The home view has **no job list**. The way into jobs and folders is global
