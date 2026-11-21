@@ -78,7 +78,7 @@ sub-feature or optional external effect below.
 | Build page + step log (`ctrl+l`) | [job-and-build.md](./job-and-build.md) |
 | Console log viewer | [log-viewer.md](./log-viewer.md) |
 | Trigger loading feedback + confirm + My Runs | [trigger-and-my-runs.md](./trigger-and-my-runs.md) |
-| Favorites | [favorites.md](./favorites.md) |
+| Favorites scope, result focus, and saved items | [favorites.md](./favorites.md) |
 | Build form, artifacts/open-folder confirmation, replay, cancellation | [build-actions.md](./build-actions.md) |
 | Server picker, add/edit setup, private-CA test/save | [server-selector.md](./server-selector.md) |
 

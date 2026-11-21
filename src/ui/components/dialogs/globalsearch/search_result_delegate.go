@@ -7,6 +7,7 @@ import (
 
 	"github.com/atm1020/jenktui/src/jobref"
 	"github.com/atm1020/jenktui/src/ui/styles"
+	"github.com/atm1020/jenktui/src/ui/util"
 
 	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
@@ -15,7 +16,8 @@ import (
 )
 
 type SearchDelegate struct {
-	wWidth int
+	wWidth        int
+	hideSelection bool
 }
 
 // breadcrumbSep separates folder segments in a Jenkins full display name.
@@ -29,27 +31,51 @@ func (d SearchDelegate) Update(msg tea.Msg, m *list.Model) tea.Cmd {
 }
 
 func (d SearchDelegate) Render(w io.Writer, m list.Model, index int, ii list.Item) {
-	var name, group, url string
+	var name, group, url, favoriteParent string
+	var kind jobref.Kind
 	switch i := ii.(type) {
 	case SearchResultItem:
 		name, group, url = i.Name, i.Group, i.URL
+		kind = jobref.KindFromClass(i.Type)
 	case LegacySearchResultItem:
 		name, group, url = i.Name, "Items", i.URL
+	case favoriteItem:
+		name, group, url = jobref.DecodeName(i.leaf), "Items", i.URL
+		kind, favoriteParent = i.target().Kind, i.parent
+		if name == "" {
+			name = i.Name
+		}
 	default:
 		return
 	}
 
-	isSelected := index == m.Index()
+	isSelected := !d.hideSelection && index == m.Index()
 
 	t := styles.GetTheme()
 
 	icon := d.getGroupIcon(group)
+	favorite, saved := ii.(favoriteItem)
 	// Non-item URLs (nodes, views, users, manage pages) are dimmed so the
 	// user sees they are not openable before pressing Enter. URL shape is
 	// the source of truth — Group is a server display string and may be
 	// localized — matching the gate HandleJobTarget uses.
 	openable := jobref.IsJobURL(url)
+	switch kind {
+	case jobref.KindFolder:
+		icon = t.S().RawIcon.Folder
+	case jobref.KindMultiBranch:
+		icon = styles.BranchIcon
+	case jobref.KindPipeline:
+		icon = styles.WorkflowJobIcon
+	default:
+		if saved && favorite.Kind == "job" {
+			icon = styles.WorkflowJobIcon
+		}
+	}
 	leaf, breadcrumb := splitBreadcrumb(name)
+	if favoriteParent != "" {
+		breadcrumb = favoriteParent
+	}
 	if breadcrumb == "" {
 		breadcrumb = "(root)"
 		if !openable {
@@ -57,9 +83,11 @@ func (d SearchDelegate) Render(w io.Writer, m list.Model, index int, ii list.Ite
 		}
 	}
 
-	prefix := icon + "  "
-	indent := strings.Repeat(" ", lipgloss.Width(prefix))
-	textWidth := max(0, d.wWidth-lipgloss.Width(prefix))
+	// Keep names aligned even when icons occupy different numbers of cells.
+	prefix := ansi.Truncate(util.PadWidth(strings.TrimSpace(icon), 2)+" ", d.wWidth, "")
+	prefixWidth := lipgloss.Width(prefix)
+	indent := strings.Repeat(" ", prefixWidth)
+	textWidth := max(0, d.wWidth-prefixWidth)
 	leaf = ansi.Truncate(leaf, textWidth, "…")
 	breadcrumb = truncateLeft(breadcrumb, textWidth, "…")
 

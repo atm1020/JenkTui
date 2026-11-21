@@ -62,10 +62,10 @@ Steps:
   - `last_server_id` is now `local-b`.
 - **Scoped data.**
   - On Local B, open `mobile-app` (the canonical sequence), press `F`, then
-    `f`, and wait for `$J wait RUN 'Jobs \(1\)'`.
+    `f`, and wait for `$J wait RUN '1 item'`.
   - Run `$J keys RUN C-s`, wait for `Select Jenkins server`, then
     `$J keys RUN k Enter`, then `f`, and wait for
-    `$J wait RUN 'Jobs \(0\)'`.
+    `$J wait RUN 'No saved favorites'`.
   - Run `$J db RUN 'select server_id,name from favorites'`. The only row
     is `local-b`.
 

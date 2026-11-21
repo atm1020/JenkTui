@@ -1,87 +1,37 @@
-# Favorites
+# Favorites scope
 
-Favorites let the user star jobs, folders, and multibranch pipelines and
-reopen them from one view with tabs per kind. Favorites are stored per
-server in `runs.db` and survive restarts.
-
-## Sub-features
-
-- `fav-toggle`: `F` on a job page favorites that job. `F` on a folder
-  page favorites **the folder being viewed**, not the selected row (verified
-  in `folder.go` `toggleFavorite`, which uses `m.target`). It adds or
-  removes the favorite. The footer toast reads `Added to favorites` (or the removal
-  message).
-- `fav-view`: `f` opens Favorites, with tabs
-  `Jobs (n)   Folders (n)   Multibranch (n)` and columns `NAME` and
-  `UPDATED`.
-- `fav-tabs`: `J`, `F`, and `M` switch to the Jobs, Folders, and
-  Multibranch tabs.
-- `fav-open`: Enter opens the selected job or container. `r` opens My
-  Runs filtered to a selected job; containers warn `Containers have no run
-  history`.
-- `fav-delete`: `d` removes the selected favorite.
-- `fav-search`: `/` filters the list.
-- `fav-persist`: favorites survive an app restart that keeps the same
-  `runs.db`.
-
-## How to get to it (user POV)
-
-- `f` from any page opens the view.
-- `F` on a job page favorites that job.
-- `F` while viewing a folder (or a multibranch project) favorites that
-  container. To favorite a child, open it first.
+`f` opens the shared search picker in Favorites. The same list contains jobs,
+folders, and multibranch pipelines; icons identify each type. Favorites are
+stored per server in `runs.db`.
 
 ## Driving it with jt
 
-Preconditions:
+Start from a fresh `jt up` and `jt doctor`. Check that `select count(*) from favorites`
+returns `0` via `jt db`, and capture the initial screen with `jt snap`.
 
-- The instance is freshly started (`$J up RUN`), so its `runs.db` has no
-  favorites. Check with `$J db RUN 'select count(*) from favorites'`.
-  Store initialization creates the database; no first favorite is needed.
+1. Open `mobile-app` via [Jenkins search](./search-and-browse.md) and wait for
+   build boxes. Press `F`, wait for `Added to favorites`, then press `f` and
+   wait for `─ Favorites` and `1 item`. Check that the divider spans the
+   picker above the results and ends with Favorites at the right edge. The
+   command row below the results still shows `S switch scope`. With the input
+   focused, no row is highlighted. Press Enter to focus and highlight the
+   first row without opening it, then Tab to return to the input.
+2. Type `DevTeam/Frontend` without Enter; `mobile-app` should still match.
+   Snap the picker. Verify `url`, `server_id`, and `kind` in `favorites`; expect
+   `/job/DevTeam/job/Frontend/job/mobile-app/`, `local`, `job`.
+3. Clear with `C-r`, type `Backend`, and wait for `No matching favorites`.
+   Press `S` (Shift+S), wait for `─ Jenkins` and `1 item`, then snapshot
+   the preserved `Backend` query and its result. Enter opens the folder.
+4. Press `F` from the Backend folder listing to favorite Backend itself, not
+   its selected child. Press `f` and wait for `2 items`; snapshot the mixed
+   results. Check for the gear on the job and folder icon on Backend, with
+   names aligned and no star column. Verify SQLite contains both `folder` and `job`.
+5. `Tab r` on Backend warns `Containers have no run history`. `j r` opens
+   My Runs filtered to the job. Press `f` again, type `Backend`, then press
+   Enter to focus results and Enter again to open the folder.
+6. Open `f` again, then `Tab d` on Backend. Wait for `Removed from favorites`
+   and `1 item`; verify only the job remains in SQLite and snap the result.
+7. Close with `C-c`, reopen with `f`, and verify the remaining job is still listed.
 
-Steps:
-
-- **Open a job.**
-  - Follow `search-open-job` in
-    [search-and-browse.md](./search-and-browse.md) for `mobile-app`. End on
-    `$J wait RUN '│ #[0-9]+ │'`, because `F` is dropped while the job page
-    loads.
-  - Run `$J snap RUN fav-toggle-before`.
-- **Toggle the favorite.**
-  - Run `$J keys RUN F && $J wait RUN 'Added to favorites' 5`.
-  - The toast appears in the footer.
-- **Open Favorites.**
-  - Run `$J keys RUN f && $J wait RUN 'Jobs \(1\)'`.
-  - One row matches `DevTeam.*Frontend.*mobile-app`, with today's date
-    under `UPDATED`.
-- **Persisted row.**
-  - Run `$J db RUN "select url,server_id,kind from favorites"`.
-  - Expect exactly one row:
-    `http://127.0.0.1:8080/job/DevTeam/job/Frontend/job/mobile-app/ | local | job`.
-- **Open from Favorites.**
-  - Run `$J keys RUN Enter && $J crumb RUN 'Frontend.*mobile-app' && $J wait RUN '│ #[0-9]+ │'`.
-  - A known pipeline may first show centered `Loading job...`; the header
-    or breadcrumb alone does not mean it is ready for keys.
-- **Delete.**
-  - Run `$J keys RUN f && $J wait RUN 'Jobs \(1\)'`.
-  - Then run `$J keys RUN d && $J wait RUN 'Jobs \(0\)'`.
-  - Then run `$J db RUN 'select count(*) from favorites'`, which should
-    return `0`.
-- **Proof.**
-  - Run `$J snap RUN fav-view` after opening Favorites.
-  - Run `$J snap RUN fav-deleted` after the delete, along with the two
-    `db` outputs (both are in `transcript.log`).
-
-## Gotchas
-
-- In the Favorites view, `F` means the **Folders tab**, not "favorite". It
-  toggles a favorite only on job and folder pages.
-- Favorites are keyed by `server_id`. The harness server id is `local`, so
-  rows from a developer's real servers never appear here.
-- Pressing `F` twice on the same job removes the favorite again. Always read
-  the toast before you assume the state.
-- `d` deletes **immediately**, with no confirmation and **no toast**. The
-  footer may still show the stale `Added to favorites` toast. Prove the
-  delete with `Jobs (0)` and `$J db`.
-- Favorites are server-scoped. That is proven in
-  [server-selector.md](./server-selector.md).
+See [server selection](./server-selector.md) for the server isolation check.
+Finish with `jt down RUN`.

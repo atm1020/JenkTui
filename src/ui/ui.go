@@ -25,7 +25,6 @@ import (
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/serverselector"
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/serversetup"
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/themeselector"
-	"github.com/atm1020/jenktui/src/ui/components/favorites"
 	"github.com/atm1020/jenktui/src/ui/components/flowlogviewer"
 	"github.com/atm1020/jenktui/src/ui/components/folder"
 	"github.com/atm1020/jenktui/src/ui/components/footer"
@@ -663,7 +662,7 @@ func (a *App) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 
 	// While the focused view is capturing text (e.g. the log search box), don't let
 	// the app's global letter shortcuts (Back "b", Forward "f", MyRuns "m",
-	// Favorites "g", Help "?") fire into the field — forward straight to the view.
+	// Favorites, Help) fire into the field — forward straight to the view.
 	// Ctrl+C still quits.
 	if cur := a.router.CurrentView(); cur != nil {
 		if capturer, ok := cur.(interface{ IsCapturingInput() bool }); ok && capturer.IsCapturingInput() {
@@ -701,9 +700,8 @@ func (a *App) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 	}
 
 	if key.Matches(msg, a.keyMap.Favorites) {
-		return util.CmdHandler(router.NavigateMsg{
-			Model: favorites.NewModel(a.ctx, a.wWidth, a.wHeight),
-		})
+		cleanup := a.replaceDialog(globalsearch.NewFavoritesDialog(a.ctx, a.wWidth, a.wHeight))
+		return tea.Batch(cleanup, a.dialog.Init())
 	}
 
 	if key.Matches(msg, a.keyMap.Back) {

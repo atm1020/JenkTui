@@ -52,6 +52,7 @@ type GlobalKeyMapConfig struct {
 
 // Dialog keymaps
 type GlobalsearchDialogKeyMapConfig struct {
+	ToggleScope KeyBinding `json:"toggle_scope"`
 	Help        KeyBinding `json:"help"`
 	Quit        KeyBinding `json:"quit"`
 	ToggleFocus KeyBinding `json:"toggle_focus"`

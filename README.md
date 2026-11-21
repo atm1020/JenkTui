@@ -24,7 +24,7 @@
 * Trigger, replay, and abort builds
 * Pipeline stages and artifact downloads
 * Console log viewer with incremental loading and search, built for large logs
-* Global search using Jenkins's built-in search
+* One search picker: `Ctrl+P` for Jenkins, `f` for Favorites, and `Shift+S` to switch scopes without retyping
 * My Runs history of builds you trigger
 * Optional desktop notifications when your builds end
 * Favorites for jobs, multibranch pipelines, and folders
@@ -197,6 +197,7 @@ The filename without `.json` is the theme name. A file whose name matches a buil
     },
     "dialogs": {
       "global_search": {
+        "toggle_scope": ["S"],
         "help": ["ctrl+g"],
         "quit": ["ctrl+c"],
         "toggle_focus": ["tab"],

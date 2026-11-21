@@ -69,6 +69,7 @@ func getDefaultKeyMapConfig() context.KeyMapConfig {
 				Close:    context.KeyBinding{"esc"},
 			},
 			Globalsearch: context.GlobalsearchDialogKeyMapConfig{
+				ToggleScope: context.KeyBinding{"S"},
 				Help:        context.KeyBinding{"ctrl+g"},
 				Quit:        context.KeyBinding{"ctrl+c"},
 				ToggleFocus: context.KeyBinding{"tab"},

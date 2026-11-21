@@ -83,6 +83,7 @@ func TestMergeKeyMapConfig(t *testing.T) {
 				defaults.Dialog.Globalsearch = context.GlobalsearchDialogKeyMapConfig{
 					Help:        kb("?"),
 					Quit:        kb("q"),
+					ToggleScope: kb("alt+f"),
 					ToggleFocus: kb("ctrl+tab"),
 					FocusUp:     kb("up"),
 					FocusDown:   kb("down"),
@@ -114,6 +115,7 @@ func TestMergeKeyMapConfig(t *testing.T) {
 				defaults.Dialog.Globalsearch = context.GlobalsearchDialogKeyMapConfig{
 					Help:        kb("?"),
 					Quit:        kb("q"),
+					ToggleScope: kb("alt+f"),
 					ToggleFocus: kb("ctrl+tab"),
 					FocusUp:     kb("up"),
 					FocusDown:   kb("down"),

@@ -7,6 +7,7 @@ import (
 )
 
 type KeyMap struct {
+	ToggleScope key.Binding
 	Quit        key.Binding
 	Help        key.Binding
 	FocusUp     key.Binding
@@ -42,13 +43,13 @@ func DefaultKeyMap() KeyMap {
 
 func (k KeyMap) ShortHelp() []key.Binding {
 	return []key.Binding{
-		k.Quit, k.ToggleFocus, k.Help,
+		k.ToggleScope, k.Quit, k.ToggleFocus, k.Help,
 	}
 }
 
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Quit, k.ToggleFocus, k.Help},
+		{k.ToggleScope, k.Quit, k.ToggleFocus, k.Help},
 		{k.FocusUp, k.FocusDown},
 	}
 }
@@ -61,13 +62,13 @@ type SearchInputKeyMap struct {
 
 func (sk SearchInputKeyMap) ShortHelp() []key.Binding {
 	return []key.Binding{
-		sk.Search, sk.ToggleFocus, sk.Quit, sk.Help,
+		sk.ToggleScope, sk.Search, sk.ToggleFocus, sk.Quit, sk.Help,
 	}
 }
 
 func (sk SearchInputKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{sk.Search, sk.ToggleFocus, sk.Quit, sk.Help},
+		{sk.ToggleScope, sk.Search, sk.ToggleFocus, sk.Quit, sk.Help},
 		{sk.ClearInput, sk.FocusUp, sk.FocusDown},
 	}
 }
@@ -98,13 +99,13 @@ type SearchResultKeyMap struct {
 
 func (sr SearchResultKeyMap) ShortHelp() []key.Binding {
 	return []key.Binding{
-		sr.Down, sr.Up, sr.Filter, sr.ToggleFocus, sr.Select, sr.Help,
+		sr.ToggleScope, sr.Down, sr.Up, sr.Filter, sr.ToggleFocus, sr.Select, sr.Help,
 	}
 }
 
 func (sr SearchResultKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{sr.Down, sr.Up, sr.Filter, sr.ToggleFocus, sr.Select, sr.Help},
+		{sr.ToggleScope, sr.Down, sr.Up, sr.Filter, sr.ToggleFocus, sr.Select, sr.Help},
 		{sr.NextPage, sr.PrevPage, sr.FocusUp, sr.FocusDown, sr.Quit},
 	}
 }
@@ -142,6 +143,7 @@ func GetSearchResultKeyMap() SearchResultKeyMap {
 // UserKeyMap creates a KeyMap from user configuration
 func UserKeyMap(conf context.GlobalsearchDialogKeyMapConfig) KeyMap {
 	return KeyMap{
+		ToggleScope: key.NewBinding(key.WithKeys(conf.ToggleScope...), key.WithHelp(conf.ToggleScope.HelpText(), "switch scope")),
 		Help: key.NewBinding(
 			key.WithKeys(conf.Help...),
 			key.WithHelp(conf.Help.HelpText(), "more"),
