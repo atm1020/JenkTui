@@ -6,7 +6,8 @@ listing, and `b` walks back through navigation history.
 
 ## Sub-features
 
-- `search-open`: `ctrl+p` opens the `Global Search` dialog from any view.
+- `search-open`: `ctrl+p` opens the shared search picker with `─ Jenkins` above the results.
+- `search-scope`: `S` (Shift+S) switches between Jenkins and [Favorites](./favorites.md), preserving the query. Switching to Jenkins submits a nonempty query.
 - `search-query`: typing a name and pressing Enter lists matching items with
   `N item(s)`, a leaf name, and a parent `»` breadcrumb on the next line;
   no URL is displayed.
@@ -22,7 +23,7 @@ listing, and `b` walks back through navigation history.
 
 ## How to get to it (user POV)
 
-- Press `ctrl+p` from any page (home, job, build, Favorites, My Runs).
+- Press `ctrl+p` from any page (home, job, build, My Runs).
 - To open a folder or job, select a search result, a Favorites row, or a row
   in another folder listing.
 
@@ -47,7 +48,7 @@ Steps:
     build boxes are drawn, which means the page is ready for keys.
 - **Search for a folder.**
   - Run `$J keys RUN C-p && $J wait RUN 'Global Search'`.
-  - Then run `$J keys RUN C-r && $J wait RUN 'Global Search' && $J type RUN Backend && $J keys RUN Enter && $J wait RUN '‣ .*Backend'`.
+  - Then run `$J keys RUN C-r && $J wait RUN 'Global Search' && $J type RUN Backend && $J keys RUN Enter && $J wait RUN '[[:space:]]Backend'`.
 - **Open the folder.**
   - Run `$J keys RUN Enter && $J crumb RUN 'DevTeam.*Backend' && $J wait RUN '[0-9]+ items'`.
   - The listing shows `ansi-color-log`, `api-service`, `log-heavy-job`, and

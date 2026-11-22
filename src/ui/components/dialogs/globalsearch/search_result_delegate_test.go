@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/atm1020/jenktui/src/store"
 	"github.com/atm1020/jenktui/src/ui/styles"
 
 	"charm.land/bubbles/v2/list"
@@ -78,6 +79,27 @@ func renderRow(t *testing.T, d SearchDelegate, items []list.Item, selected, idx 
 		t.Fatalf("row has %d lines, want %d: %q", len(lines), d.Height(), buf.String())
 	}
 	return lines
+}
+
+func TestSearchDelegate_AlignsTypeIcons(t *testing.T) {
+	items := []list.Item{
+		favoriteItem{FavoriteRecord: store.FavoriteRecord{Name: "job", Kind: "job"}},
+		favoriteItem{FavoriteRecord: store.FavoriteRecord{Name: "folder", Kind: "folder"}},
+		favoriteItem{FavoriteRecord: store.FavoriteRecord{Name: "branches", Kind: "multibranch"}},
+		NewSearchResultItem(&gojenkins.Suggestion{Name: "other", URL: "/job/other/"}),
+	}
+	for i, tc := range []struct{ name, icon string }{
+		{"job", styles.WorkflowJobIcon},
+		{"folder", strings.TrimSpace(styles.FolderIcon)},
+		{"branches", styles.BranchIcon},
+		{"other", "•"},
+	} {
+		line := ansi.Strip(renderRow(t, SearchDelegate{wWidth: 60}, items, 0, i)[0])
+		prefix, _, found := strings.Cut(line, tc.name)
+		if !found || lipgloss.Width(prefix) != 3 || strings.TrimSpace(prefix) != tc.icon {
+			t.Errorf("%s: wrong icon or alignment in %q", tc.name, line)
+		}
+	}
 }
 
 func TestSearchDelegate_StacksLeafOverBreadcrumb(t *testing.T) {

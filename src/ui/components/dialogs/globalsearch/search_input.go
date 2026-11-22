@@ -2,7 +2,6 @@ package globalsearch
 
 import (
 	"github.com/atm1020/jenktui/src/context"
-	"github.com/atm1020/jenktui/src/ui/util"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
@@ -14,10 +13,6 @@ const (
 	CharLimitGlobalSearch   = 32
 	GlobalSearchDialogWidth = CharLimitGlobalSearch + 4
 )
-
-type FetchGlobalSearchResultsMsg struct {
-	Query string
-}
 
 type SearchInputModel struct {
 	textInput textinput.Model
@@ -51,14 +46,6 @@ func (m *SearchInputModel) View() string {
 
 func (m *SearchInputModel) handleKeyPressMsg(msg tea.KeyMsg) tea.Cmd {
 	log.Debug("SearchInputModel received", "msg", msg)
-	if key.Matches(msg, m.keyMap.Search) {
-		value := m.textInput.Value()
-		m.textInput.CursorEnd()
-		return util.CmdHandler(FetchGlobalSearchResultsMsg{
-			Query: value,
-		})
-	}
-
 	if key.Matches(msg, m.keyMap.ClearInput) {
 		m.textInput.SetValue("")
 		m.textInput.Focus()

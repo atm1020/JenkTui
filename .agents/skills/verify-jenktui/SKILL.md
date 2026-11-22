@@ -161,14 +161,15 @@ Stable handles to wait on:
   disappears once a query is typed, so wait for it only right after `C-p`
   or `C-r`), `Health Score` or
   `No health report available` (job page), `Build #<n>` (build page),
-  `Loaded: a-b/N | Line: x | Scroll: y%` (log viewer), `Jobs (n)   Folders (n)`
-  (Favorites), `My Runs`.
+  `Loaded: a-b/N | Line: x | Scroll: y%` (log viewer), `─ Jenkins`,
+  `─ Favorites` (search scope labels at the top right of the results), `My Runs`.
 
 Default keys (from `getDefaultKeyMapConfig` in `src/config/loader.go`;
 active dialogs and text-input modes can intercept global keys):
 
 - **Global:** `ctrl+p` search, `b` back, `]` forward, `m` My Runs,
-  `f` Favorites, `ctrl+s` server, `ctrl+t` theme, `?` help, `ctrl+c` quit
+  `f` search Favorites, `S` (Shift+S) change search scope in the picker,
+  `ctrl+s` server, `ctrl+t` theme, `?` help, `ctrl+c` quit
 - **Job:** `enter` build, `L` log, `ctrl+b` trigger, `r` replay, `x` cancel,
   `F` favorite, `B`/`S` builds/stages pane
 - **Build:** `h`/`l` stage, `ctrl+l` step log, `L` full log, `P` params,

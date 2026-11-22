@@ -33,12 +33,6 @@ type SearchResultItem struct {
 	*gojenkins.Suggestion
 }
 
-type UpdateListItemMsg struct {
-	Items  []list.Item
-	Width  int
-	Height int
-}
-
 func (d SearchResultItem) FilterValue() string {
 	return d.Name
 }
@@ -75,6 +69,8 @@ type SearchResultModel struct {
 	keyMap    SearchResultKeyMap
 	spinner   spinner.Model
 	isLoading bool
+	focused   bool
+	emptyText string
 	ctx       *context.ProgramContext
 }
 
@@ -85,13 +81,15 @@ func NewSearcResultModel(ctx *context.ProgramContext, width, height int, keymapC
 		Foreground(styles.GetTheme().Primary)
 
 	m := &SearchResultModel{
-		wWidth:  width,
-		wHeight: height,
-		keyMap:  UserSearchResultKeyMap(keymapConf),
-		list:    buildListModel(width, height),
-		spinner: spin,
-		ctx:     ctx,
+		wWidth:    width,
+		wHeight:   height,
+		keyMap:    UserSearchResultKeyMap(keymapConf),
+		list:      buildListModel(width, height),
+		spinner:   spin,
+		ctx:       ctx,
+		emptyText: "No results found",
 	}
+	m.setDelegate()
 	// Drive the list's built-in filter with the configured key so the filter key
 	// ("/" by default) starts filtering the results.
 	m.list.KeyMap.Filter = m.keyMap.Filter
@@ -104,10 +102,6 @@ func (s *SearchResultModel) Init() tea.Cmd {
 
 func (s *SearchResultModel) Update(msg tea.Msg) (*SearchResultModel, tea.Cmd) {
 	switch msg := msg.(type) {
-	case FetchGlobalSearchResultsMsg:
-		return s, s.handleFetchResults()
-	case UpdateListItemMsg:
-		return s, s.handleListItems(msg)
 	case tea.WindowSizeMsg:
 		return s, s.handleWindowSize(msg)
 	case tea.KeyMsg:
@@ -126,7 +120,7 @@ func (s *SearchResultModel) View() string {
 	}
 
 	base := t.S().Base
-	msg := base.Foreground(t.Border).Render("No results found")
+	msg := base.Foreground(t.Border).Render(s.emptyText)
 	if s.isLoading {
 		msg = lipgloss.JoinHorizontal(
 			lipgloss.Left,
@@ -172,23 +166,30 @@ func (s *SearchResultModel) handleKeyPressMsg(msg tea.KeyMsg) tea.Cmd {
 	}
 
 	if key.Matches(msg, s.keyMap.Select) {
-		switch item := s.list.SelectedItem().(type) {
-		case SearchResultItem:
-			log.Debug("SearchResultModel item selected", "item", item)
-			return util.CmdHandler(s.resultSelectedMsg(item.Name, item.URL, jobref.KindFromClass(item.Type)))
-		case LegacySearchResultItem:
-			log.Debug("LegacySearchResultModel item selected", "item", item)
-			return func() tea.Msg {
-				ctx, cancel := s.ctx.RequestContext()
-				defer cancel()
-				resolved, err := item.Resolve(ctx, s.ctx.Jenkins)
-				if err != nil {
-					return util.ErrorMsg{Title: "Could not resolve", Error: err}
-				}
-				// The legacy HTML endpoint carries no class, so the target
-				// stays unknown and the destination classifies it.
-				return s.resultSelectedMsg(resolved.Name, resolved.URL, jobref.KindUnknown)
+		return s.selectItem()
+	}
+	return nil
+}
+
+func (s *SearchResultModel) selectItem() tea.Cmd {
+	switch item := s.list.SelectedItem().(type) {
+	case favoriteItem:
+		return util.CmdHandler(SearchResultItemSelectedMsg{Target: item.target()})
+	case SearchResultItem:
+		log.Debug("SearchResultModel item selected", "item", item)
+		return util.CmdHandler(s.resultSelectedMsg(item.Name, item.URL, jobref.KindFromClass(item.Type)))
+	case LegacySearchResultItem:
+		log.Debug("LegacySearchResultModel item selected", "item", item)
+		return func() tea.Msg {
+			ctx, cancel := s.ctx.RequestContext()
+			defer cancel()
+			resolved, err := item.Resolve(ctx, s.ctx.Jenkins)
+			if err != nil {
+				return util.ErrorMsg{Title: "Could not resolve", Error: err}
 			}
+			// The legacy HTML endpoint carries no class, so the target
+			// stays unknown and the destination classifies it.
+			return s.resultSelectedMsg(resolved.Name, resolved.URL, jobref.KindUnknown)
 		}
 	}
 	return nil
@@ -217,20 +218,29 @@ func (s *SearchResultModel) handleFetchResults() tea.Cmd {
 	return s.spinner.Tick
 }
 
-func (s *SearchResultModel) handleListItems(msg UpdateListItemMsg) tea.Cmd {
-	log.Error("items %s", msg.Items)
-	s.list.SetItems(msg.Items)
-	s.isLoading = false
-	return nil
-}
-
 func (s *SearchResultModel) handleWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
 	s.wWidth = msg.Width
 	s.wHeight = msg.Height
 	s.list.SetWidth(s.wWidth)
 	s.list.SetHeight(s.wHeight)
-	s.list.SetDelegate(SearchDelegate{wWidth: s.wWidth})
+	s.setDelegate()
 	return nil
+}
+
+func (s *SearchResultModel) setDelegate() {
+	s.list.SetDelegate(SearchDelegate{wWidth: s.wWidth, hideSelection: !s.focused})
+}
+
+func (s *SearchResultModel) setFocused(focused bool) {
+	s.focused = focused
+	s.setDelegate()
+}
+
+func (s *SearchResultModel) setItems(items []list.Item) {
+	s.list.ResetFilter()
+	s.list.SetItems(items)
+	s.list.Select(0)
+	s.isLoading = false
 }
 
 func (s *SearchResultModel) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
