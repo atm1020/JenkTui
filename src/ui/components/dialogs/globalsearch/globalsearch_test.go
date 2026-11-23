@@ -19,6 +19,7 @@ func TestScopeDividerAndCommandHelp(t *testing.T) {
 		ToggleScope: appcontext.KeyBinding{"S"}, Search: appcontext.KeyBinding{"enter"},
 		Select: appcontext.KeyBinding{"enter"},
 	}
+	ctx.Config.KeyMapConfig.Favorites.OpenRuns = appcontext.KeyBinding{"r"}
 	dialog := NewFavoritesDialog(ctx, 160, 45)
 	for _, width := range []int{100, 40, 5} {
 		dialog.wWidth = width
@@ -28,7 +29,7 @@ func TestScopeDividerAndCommandHelp(t *testing.T) {
 		}
 	}
 	dialog.wWidth = 100
-	for _, want := range []string{"enter focus results", "enter select"} {
+	for _, want := range []string{"enter focus results", "enter navigate"} {
 		view := ansi.Strip(dialog.View())
 		divider := strings.Index(view, "─────── Favorites")
 		results := strings.Index(view, "No saved favorites")
@@ -43,6 +44,9 @@ func TestScopeDividerAndCommandHelp(t *testing.T) {
 			t.Errorf("expected scope shortcut alongside %q", want)
 		}
 		dialog.focusToSearchResult()
+	}
+	if view := ansi.Strip(dialog.View()); !strings.Contains(view, "r go to run history") {
+		t.Error("expected run-history navigation hint")
 	}
 }
 

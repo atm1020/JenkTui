@@ -21,7 +21,7 @@ type favoriteKeys struct{ remove, runs key.Binding }
 func newFavoriteKeys(conf context.FavoritesKeyMapConfig) favoriteKeys {
 	return favoriteKeys{
 		remove: key.NewBinding(key.WithKeys(conf.Delete...), key.WithHelp(conf.Delete.HelpText(), "remove favorite")),
-		runs:   key.NewBinding(key.WithKeys(conf.OpenRuns...), key.WithHelp(conf.OpenRuns.HelpText(), "run history")),
+		runs:   key.NewBinding(key.WithKeys(conf.OpenRuns...), key.WithHelp(conf.OpenRuns.HelpText(), "go to run history")),
 	}
 }
 
