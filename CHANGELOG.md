@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.0-beta.5](https://github.com/atm1020/JenkTui/compare/v1.0.0-beta.4...v1.0.0-beta.5) (2026-11-23)
+
+
+### Features
+
+* command palette ([6a47ebf](https://github.com/atm1020/JenkTui/commit/6a47ebf7e62069c084bad68fa3831f01506d6888))
+* command palette ([f6b6b9f](https://github.com/atm1020/JenkTui/commit/f6b6b9f5bdba3f58e75240085ffadaeaad22ec4d))
+* update favourite view ([f254631](https://github.com/atm1020/JenkTui/commit/f2546318feb690736ccf81be765e4ffcf3b50ebc))
+* update favourite view ([701c955](https://github.com/atm1020/JenkTui/commit/701c955b8bc793e5accc84487541d6e1b9837b5a))
+
 ## [1.0.0-beta.4](https://github.com/atm1020/JenkTui/compare/v1.0.0-beta.3...v1.0.0-beta.4) (2026-11-20)
 
 
