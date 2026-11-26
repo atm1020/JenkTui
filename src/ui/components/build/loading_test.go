@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,23 +29,27 @@ const fixtureJobPath = "/job/team/job/demo"
 var fixtureLoadPaths = []string{
 	fixtureJobPath + "/api/json",
 	fixtureJobPath + "/42/wfapi/describe/api/json",
-	// The pinned gojenkins GetBuild appends a slash to Job.Raw.URL.
-	fixtureJobPath + "//42/api/json",
+	fixtureJobPath + "/42/api/json",
 	fixtureJobPath + "/42/execution/node/7/wfapi/describe/api/json",
 }
 
 func serveBuildLoadFixture(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case fixtureLoadPaths[0]:
-		_, _ = fmt.Fprintf(w, `{"name":"demo","url":"http://%s%s/"}`, r.Host, fixtureJobPath)
+		_, _ = fmt.Fprintf(w,
+			`{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowJob","name":"demo","url":"http://%s%s/","color":"blue","healthReport":[{"description":"Build stability: No recent builds failed.","score":100}],"lastBuild":{"number":42},"nextBuildNumber":43,"property":[{"parameterDefinitions":[{"name":"BRANCH","type":"StringParameterDefinition","defaultParameterValue":{"name":"BRANCH","value":"main"}}]}]}`,
+			r.Host, fixtureJobPath,
+		)
 	case fixtureLoadPaths[1]:
 		// Deliberately omit wfapi self links: API paths must still be relative
 		// to the client, not the absolute URL used for navigation identity.
 		_, _ = fmt.Fprint(w, `{"id":"42","name":"#42","status":"SUCCESS","stages":[{"id":"7","name":"Build","status":"SUCCESS"}]}`)
 	case fixtureLoadPaths[2]:
-		_, _ = fmt.Fprint(w, `{"number":42,"result":"SUCCESS","actions":[{"causes":[{"userName":"Tester","shortDescription":"Started by Tester"}]}]}`)
+		_, _ = fmt.Fprint(w, `{"number":42,"actions":[{"causes":[{"userName":"Tester","shortDescription":"Started by Tester"}]}],"artifacts":[{"fileName":"report.txt","relativePath":"out/report.txt"}]}`)
 	case fixtureLoadPaths[3]:
 		_, _ = fmt.Fprint(w, `{"id":"7","name":"Build","status":"SUCCESS","execNode":"linux-1"}`)
+	case fixtureJobPath + "/42/parameters/":
+		_, _ = fmt.Fprint(w, `<div class="jenkins-form-item"><div class="jenkins-form-label">BRANCH</div><button class="copy-button" text="main"></button></div>`)
 	default:
 		http.NotFound(w, r)
 	}
@@ -73,10 +78,19 @@ func TestBuildLoadResolvesOnlyMissingData(t *testing.T) {
 	for _, source := range []string{"stored reference", "known run", "build list entry", "no stages"} {
 		t.Run(source, func(t *testing.T) {
 			var mu sync.Mutex
-			var requests []string
+			type recordedRequest struct {
+				path  string
+				tree  string
+				depth string
+			}
+			var requests []recordedRequest
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				mu.Lock()
-				requests = append(requests, r.URL.Path)
+				requests = append(requests, recordedRequest{
+					path:  r.URL.Path,
+					tree:  r.URL.Query().Get("tree"),
+					depth: r.URL.Query().Get("depth"),
+				})
 				mu.Unlock()
 				serveBuildLoadFixture(w, r)
 			}))
@@ -93,24 +107,24 @@ func TestBuildLoadResolvesOnlyMissingData(t *testing.T) {
 				Stages: []gojenkins.PipelineNode{{ID: "7", Name: "Build", Status: "SUCCESS"}},
 			}
 			var model *Model
-			var wantRequests []string
+			var wantPaths []string
 			switch source {
 			case "stored reference":
 				model = NewModelFromURL(ctx, jobURL, "42", 100, 30)
-				wantRequests = fixtureLoadPaths
+				wantPaths = fixtureLoadPaths
 			case "known run":
 				model = NewModel(ctx, knownRun, 100, 30)
-				wantRequests = fixtureLoadPaths[2:]
+				wantPaths = fixtureLoadPaths[2:]
 			case "build list entry":
 				run := knownRun
 				run.Status, run.Stages = "", nil
 				model = NewModel(ctx, run, 100, 30)
-				wantRequests = fixtureLoadPaths[1:]
+				wantPaths = fixtureLoadPaths[1:]
 			case "no stages":
 				run := knownRun
 				run.Stages = nil
 				model = NewModel(ctx, run, 100, 30)
-				wantRequests = fixtureLoadPaths[2:3]
+				wantPaths = fixtureLoadPaths[2:3]
 			}
 			defer func() { _ = model.CleanUp() }()
 			initialID := model.ID()
@@ -126,14 +140,54 @@ func TestBuildLoadResolvesOnlyMissingData(t *testing.T) {
 				t.Fatal(fetched.Error)
 			}
 			mu.Lock()
-			gotRequests := append([]string(nil), requests...)
+			gotRequests := append([]recordedRequest(nil), requests...)
 			mu.Unlock()
-			if !reflect.DeepEqual(gotRequests, wantRequests) {
-				t.Fatalf("requests = %v, want %v", gotRequests, wantRequests)
+
+			gotPaths := make([]string, len(gotRequests))
+			for i, req := range gotRequests {
+				gotPaths[i] = req.path
+				switch req.path {
+				case fixtureLoadPaths[0]:
+					if req.tree != jobDetailsTree {
+						t.Fatalf("job tree = %q, want %q", req.tree, jobDetailsTree)
+					}
+					if strings.Contains(req.tree, "builds[") {
+						t.Fatalf("job tree must not fetch builds list: %q", req.tree)
+					}
+				case fixtureLoadPaths[2]:
+					if req.tree != buildDetailsTree {
+						t.Fatalf("build tree = %q, want %q", req.tree, buildDetailsTree)
+					}
+					if req.depth != "" {
+						t.Fatalf("build request unexpectedly passed depth=%q", req.depth)
+					}
+				}
 			}
+			sortedGot := slices.Clone(gotPaths)
+			sortedWant := slices.Clone(wantPaths)
+			slices.Sort(sortedGot)
+			slices.Sort(sortedWant)
+			if !reflect.DeepEqual(sortedGot, sortedWant) {
+				t.Fatalf("requests = %v, want %v", gotPaths, wantPaths)
+			}
+			if source == "stored reference" || source == "build list entry" {
+				if gotPaths[len(gotPaths)-1] != fixtureLoadPaths[3] {
+					t.Fatalf("expected stage node fetch last after discovery, got order %v", gotPaths)
+				}
+			}
+
 			_, _ = model.Update(result)
 			if model.loading || model.build == nil || model.ID() != initialID {
 				t.Fatal("load did not finish with stable navigation identity")
+			}
+			if model.build.Base != fixtureJobPath+"/42" {
+				t.Fatalf("build.Base = %q, want %q", model.build.Base, fixtureJobPath+"/42")
+			}
+			if model.build.GetBuildNumber() != 42 {
+				t.Fatalf("build number = %d, want 42", model.build.GetBuildNumber())
+			}
+			if artifacts := model.build.GetArtifacts(); len(artifacts) != 1 || artifacts[0].FileName != "report.txt" || artifacts[0].Path != fixtureJobPath+"/42/artifact/out/report.txt" {
+				t.Fatalf("artifacts = %#v, want report.txt with clean path", artifacts)
 			}
 			if model.startedBy != "Tester" || model.startedByDetails != "Started by Tester" {
 				t.Fatalf("cause = %q / %q", model.startedBy, model.startedByDetails)
@@ -147,10 +201,177 @@ func TestBuildLoadResolvesOnlyMissingData(t *testing.T) {
 			if knownRun.Stages[0].ExecNode != "" {
 				t.Fatal("loading mutated the source Job page's run")
 			}
+			if source == "stored reference" {
+				jobRaw := model.pipelineRun.Job.GetDetails()
+				if jobRaw == nil || jobRaw.Class != "org.jenkinsci.plugins.workflow.job.WorkflowJob" || jobRaw.URL != jobURL {
+					t.Fatalf("resolved job metadata = %#v, want pipeline class and URL", jobRaw)
+				}
+				if len(jobRaw.HealthReport) != 1 || jobRaw.HealthReport[0].Score != 100 {
+					t.Fatalf("resolved job healthReport = %#v, want score 100", jobRaw.HealthReport)
+				}
+				if jobRaw.LastBuild.Number != 42 || jobRaw.NextBuildNumber != 43 {
+					t.Fatalf("resolved job build baseline = last:%d next:%d, want 42/43", jobRaw.LastBuild.Number, jobRaw.NextBuildNumber)
+				}
+				if len(jobRaw.Property) != 1 || len(jobRaw.Property[0].ParameterDefinitions) != 1 || jobRaw.Property[0].ParameterDefinitions[0].Name != "BRANCH" {
+					t.Fatalf("resolved job parameters = %#v, want BRANCH", jobRaw.Property)
+				}
+			}
+			// Verify on-demand build parameters (p) work with the projected build handle.
+			paramsMsg := model.fetchBuildParams()().(BuildParamsFetchedMsg)
+			if paramsMsg.Error != nil || len(paramsMsg.Params) != 1 || paramsMsg.Params[0].Name != "BRANCH" || paramsMsg.Params[0].Value != "main" {
+				t.Fatalf("build params = %#v, want BRANCH=main", paramsMsg)
+			}
 			if cmd := model.Init(); cmd != nil {
 				t.Fatal("returning to a loaded terminal build should not reload it")
 			}
 		})
+	}
+}
+
+// Exercise concurrent build+stage loading from a known Job page run with fixed
+// latency, pinning both request count and 1-RTT parallelism.
+func TestBuildLoadFromJobParallelizesBuildAndStageFetch(t *testing.T) {
+	const latency = 150 * time.Millisecond
+	var mu sync.Mutex
+	type hit struct {
+		path       string
+		start, end time.Duration
+	}
+	var hits []hit
+	var inFlight, peakInFlight atomic.Int32
+	press := time.Now()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := inFlight.Add(1)
+		for {
+			prev := peakInFlight.Load()
+			if cur <= prev || peakInFlight.CompareAndSwap(prev, cur) {
+				break
+			}
+		}
+		defer inFlight.Add(-1)
+
+		start := time.Since(press)
+		time.Sleep(latency)
+		mu.Lock()
+		hits = append(hits, hit{path: r.URL.RequestURI(), start: start, end: time.Since(press)})
+		mu.Unlock()
+		serveBuildLoadFixture(w, r)
+	}))
+	defer server.Close()
+
+	ctx := buildLoadContext(server)
+	jobURL := server.URL + fixtureJobPath + "/"
+	knownJob := &gojenkins.Job{
+		Jenkins: ctx.Jenkins, Base: fixtureJobPath,
+		Raw: &gojenkins.JobResponse{Name: "demo", URL: jobURL},
+	}
+	knownRun := gojenkins.PipelineRun{
+		ID: "42", Name: "#42", Job: knownJob,
+		Base: fixtureJobPath + "/42", Status: "SUCCESS",
+		Stages: []gojenkins.PipelineNode{{ID: "7", Name: "Build", Status: "SUCCESS"}},
+	}
+
+	press = time.Now()
+	model := NewModel(ctx, knownRun, 160, 45)
+	defer func() { _ = model.CleanUp() }()
+
+	fetched := model.fetchBuild()().(BuildFetchedMsg)
+	if fetched.Error != nil {
+		t.Fatal(fetched.Error)
+	}
+	_, _ = model.Update(fetched)
+	ready := time.Since(press)
+
+	t.Logf("job->build ready %.3fms (peak in-flight %d)", float64(ready.Microseconds())/1000, peakInFlight.Load())
+	mu.Lock()
+	defer mu.Unlock()
+	for _, h := range hits {
+		t.Logf("%.3f -> %.3fms %s", float64(h.start.Microseconds())/1000, float64(h.end.Microseconds())/1000, h.path)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("requests = %d, want 2", len(hits))
+	}
+	if peakInFlight.Load() != 2 {
+		t.Fatalf("peak concurrent requests = %d, want 2 (build and stage node must run in parallel)", peakInFlight.Load())
+	}
+	if model.loading || model.stageDetails.pipelineNode == nil || model.stageDetails.pipelineNode.ExecNode != "linux-1" {
+		t.Fatal("build page was not ready with stage details")
+	}
+}
+
+// Exercise concurrent discovery on the URL-only / My Runs open path with fixed
+// latency: projected job details, GetPipelineRun, and projected build details
+// run concurrently (1 RTT) before GetNode (2nd RTT).
+func TestBuildLoadFromURLParallelizesDiscoveryBeforeStageFetch(t *testing.T) {
+	const latency = 150 * time.Millisecond
+	var mu sync.Mutex
+	type hit struct {
+		path       string
+		rawPath    string
+		start, end time.Duration
+	}
+	var hits []hit
+	var inFlight, peakInFlight atomic.Int32
+	press := time.Now()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := inFlight.Add(1)
+		for {
+			prev := peakInFlight.Load()
+			if cur <= prev || peakInFlight.CompareAndSwap(prev, cur) {
+				break
+			}
+		}
+		defer inFlight.Add(-1)
+
+		start := time.Since(press)
+		time.Sleep(latency)
+		mu.Lock()
+		hits = append(hits, hit{path: r.URL.RequestURI(), rawPath: r.URL.Path, start: start, end: time.Since(press)})
+		mu.Unlock()
+		serveBuildLoadFixture(w, r)
+	}))
+	defer server.Close()
+
+	ctx := buildLoadContext(server)
+	jobURL := server.URL + fixtureJobPath + "/"
+
+	press = time.Now()
+	model := NewModelFromURL(ctx, jobURL, "42", 160, 45)
+	defer func() { _ = model.CleanUp() }()
+
+	fetched := model.fetchBuild()().(BuildFetchedMsg)
+	if fetched.Error != nil {
+		t.Fatal(fetched.Error)
+	}
+	_, _ = model.Update(fetched)
+	ready := time.Since(press)
+
+	t.Logf("myruns->build ready %.3fms (peak in-flight %d)", float64(ready.Microseconds())/1000, peakInFlight.Load())
+	mu.Lock()
+	defer mu.Unlock()
+	var describeEnd, nodeStart time.Duration
+	for _, h := range hits {
+		t.Logf("%.3f -> %.3fms %s", float64(h.start.Microseconds())/1000, float64(h.end.Microseconds())/1000, h.path)
+		if h.rawPath == fixtureLoadPaths[1] {
+			describeEnd = h.end
+		}
+		if h.rawPath == fixtureLoadPaths[3] {
+			nodeStart = h.start
+		}
+	}
+	if len(hits) != 4 {
+		t.Fatalf("requests = %d, want 4", len(hits))
+	}
+	if peakInFlight.Load() != 3 {
+		t.Fatalf("peak concurrent requests = %d, want 3 (job, pipeline run, and build must run in parallel)", peakInFlight.Load())
+	}
+	if nodeStart < describeEnd {
+		t.Fatalf("stage node request started at %v before wfapi/describe finished at %v", nodeStart, describeEnd)
+	}
+	if model.loading || model.stageDetails.pipelineNode == nil || model.stageDetails.pipelineNode.ExecNode != "linux-1" {
+		t.Fatal("build page was not ready with stage details")
 	}
 }
 
@@ -280,7 +501,7 @@ func TestBuildLoadFailuresAreScopedToCurrentAttempt(t *testing.T) {
 			}
 			failure, ok := cmd().(LoadFailedMsg)
 			if !ok || failure.Error == nil || failure.ErrorTitle != titles[i] || !model.MatchesLoadFailure(failure) {
-				t.Fatalf("failure = %#v, want scoped navigation error", failure)
+				t.Fatalf("failure = %#v, want scoped navigation error %q", failure, titles[i])
 			}
 			_ = model.CleanUp()
 			_ = model.Init()

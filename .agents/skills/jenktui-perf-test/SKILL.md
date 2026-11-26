@@ -297,3 +297,39 @@ At 20 FPS instead of 10 (`FrameInterval`), views and terminal writes double
 on both pages. Sampled CPU rises 68% on the build page and 83% on the job
 page, mostly in the renderer. The spinners are 10 FPS designs, so they would
 also spin twice as fast.
+
+### Fast build startup (`build-fast-load`, 2026-11-26)
+
+Go 1.27.4; base is `44171a0`, head is the uncommitted build fast-load worktree
+(minimal `?tree=` build details projection replacing `depth=1`, parallel build
+and initial stage-node fetch on job→build open, projected `?tree=` job details
+without `builds`, and parallel discovery of job details, `wfapi/describe`, and
+projected build details before `GetNode` on URL-only / My Runs open). Five
+interleaved 10 s rounds, ten replay samples per side (`load1` 2.74 → 4.16);
+both sanity checks pass. Benchstat was unavailable; these are the CLI's
+median/range verdicts.
+
+| Metric | `build-fast-load-base` | `build-fast-load-head` | Verdict |
+| --- | ---: | ---: | --- |
+| Replay | 15.89 µs/op (12.58–107.14) | 15.69 µs/op (13.53–40.89) | negligible |
+| `Model.View` CPU / 10 s | 60 ms (30–70) | 50 ms (20–100) | ranges-overlap |
+| Renderer CPU / 10 s | 240 ms (170–290) | 230 ms (200–340) | ranges-overlap |
+| Terminal writes/s | 12.19 | 12.19 | negligible |
+
+No measurable rendering difference; renderer buffer/cell/hash work
+(`ultraviolet.hash`, `Line.Set`, `(*Buffer).Clear`, `(*RenderBuffer).SetCell`)
+remains the limiter. The loading improvement is pinned by 150 ms/req fake
+Jenkins regression tests in `src/ui/components/build/loading_test.go`:
+- `TestBuildLoadFromJobParallelizesBuildAndStageFetch`: job→build runs projected
+  build details and initial `GetNode` concurrently (2 requests, peak in-flight
+  2), cutting 2 serial RTTs to 1 RTT (`157.0 ms` ready).
+- `TestBuildLoadFromURLParallelizesDiscoveryBeforeStageFetch`: My Runs /
+  URL-only open runs projected job details, `wfapi/describe`, and projected
+  build details concurrently (peak in-flight 3) before `GetNode` (4 requests
+  total), cutting 4 serial RTTs to 2 RTTs (`307.1 ms` ready).
+
+Against local Jenkins LTS, build `/api/json` shrank from `6,876 B` (`depth=1`)
+to `598 B` (-91.3%) on `DevTeam/Frontend/mobile-app` and from `4,908 B`
+(`depth=1`) to `977 B` (-80.1%) on `DevTeam/Backend/artifact-generator` (5
+artifacts), while job `/api/json` on the URL-only path shrank from `9,203 B`
+(unfiltered) to `373 B` (-95.9%).
