@@ -4,6 +4,8 @@ import (
 	cc "context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -126,7 +128,7 @@ func (m *Model) SetNavigationName(name string) {
 func (m *Model) Init() tea.Cmd {
 	m.unsupportedMessage = ""
 	m.loading = true
-	m.jobLoaded = false
+	m.jobLoaded = m.hasResolvedPipelineJob()
 	m.runsLoaded = false
 	m.lastSnapshotAt = time.Time{}
 	m.lastFailureAt = time.Time{}
@@ -272,11 +274,11 @@ func (m *Model) handleJobLoadedMsg(msg JobLoadedMsg) tea.Cmd {
 
 	m.job = msg.Job
 	m.jobLoaded = true
-	m.jobList.setItems(m.job.GetDetails().Builds)
 	if m.pollWatch == nil {
 		m.runsLoaded = true
 		m.pipelineRuns = msg.PipelineRuns
 		m.stageView.SetPipelineRun(msg.PipelineRuns)
+		m.syncBuildList()
 		m.isBuildInProgress = msg.HasInProgressBuild
 		m.stageView.hasInProgress = msg.HasInProgressBuild
 	} else {
@@ -287,6 +289,7 @@ func (m *Model) handleJobLoadedMsg(msg JobLoadedMsg) tea.Cmd {
 			m.pipelineRuns[i].Base = m.job.Base + "/" + m.pipelineRuns[i].ID
 		}
 		m.stageView.SetPipelineRun(m.pipelineRuns)
+		m.syncBuildList()
 	}
 	m.loading = !m.runsLoaded && m.runsError == ""
 	m.isFavorite = msg.IsFavorite
@@ -365,6 +368,33 @@ func (m *Model) updateStageView(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
+// jobDetailsTree projects only the job fields needed for header rendering,
+// container/unsupported classification, and instant trigger dialogs. Omitting
+// builds, actions, and extra build refs keeps startup fast; the left Builds
+// menu is populated from the classic 10-run stage view instead.
+const jobDetailsTree = "_class,name,url,color," +
+	"healthReport[description,score]," +
+	"lastBuild[number]," +
+	"nextBuildNumber," +
+	"property[parameterDefinitions[name,type,description,choices,defaultParameterValue[name,value]]]"
+
+func fetchJobDetails(ctx cc.Context, jenkins *gojenkins.Jenkins, id string, parentIDs ...string) (*gojenkins.Job, error) {
+	j := jenkins.JobRef(id, parentIDs...)
+	resp, err := jenkins.Requester.GetJSON(ctx, j.Base, j.Raw, map[string]string{"tree": jobDetailsTree})
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, errors.New("empty response from Jenkins")
+	}
+	// The requester has already drained and closed the body.
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusOK {
+		return j, nil
+	}
+	return nil, errors.New(strconv.Itoa(resp.StatusCode))
+}
+
 func (m *Model) fetchJob() tea.Cmd {
 	m.cancelInFlightRequest()
 	requestCtx, cancel := m.ctx.RequestContext()
@@ -379,7 +409,7 @@ func (m *Model) fetchJob() tea.Cmd {
 
 	return func() tea.Msg {
 		id, parentIds := jobref.ToIDAndParents(jobURL)
-		j, err := jenkins.GetJob(requestCtx, id, parentIds...)
+		j, err := fetchJobDetails(requestCtx, jenkins, id, parentIds...)
 		if err != nil {
 			return JobLoadedMsg{Generation: generation, Error: err, ErrorTitle: "Could not open job — it may have been deleted"}
 		}
@@ -397,7 +427,7 @@ func (m *Model) fetchJob() tea.Cmd {
 		}
 		var runs []gojenkins.PipelineRun
 		if fetchRuns {
-			runs, err = j.GetPipelineRunsWithOptions(requestCtx, &gojenkins.PipelineRunsOptions{FullStages: true})
+			runs, err = j.GetPipelineRuns(requestCtx)
 			if err != nil {
 				return JobLoadedMsg{Generation: generation, Error: err, ErrorTitle: fmt.Sprintf("Could not load pipeline runs: %s", id)}
 			}
@@ -602,13 +632,28 @@ func (m *Model) pipelineRunsFromSnapshots(snapshots []poll.RunSnapshot) []gojenk
 func (m *Model) applySnapshotData(runs []gojenkins.PipelineRun, hasInProgress bool) tea.Cmd {
 	m.pipelineRuns = runs
 	m.stageView.SetPipelineRun(runs)
-
-	if m.job != nil {
-		m.jobList.setItems(m.job.GetDetails().Builds)
-	}
+	m.syncBuildList()
 	m.isBuildInProgress = hasInProgress
 	m.stageView.hasInProgress = hasInProgress
 	return m.ensureAnimation()
+}
+
+func (m *Model) syncBuildList() {
+	if m.jobList == nil || m.stageView == nil {
+		return
+	}
+	m.jobList.setRuns(m.stageView.pipelineRuns)
+}
+
+// hasResolvedPipelineJob reports whether m.job already holds a classified
+// pipeline record with a Jenkins base path (e.g. router Back/Forward or
+// returning from a build page). Combined with a poll replay snapshot, Init can
+// render immediately while fetchJob refreshes metadata in the background.
+func (m *Model) hasResolvedPipelineJob() bool {
+	if m.job == nil || m.job.Base == "" || m.job.GetDetails() == nil {
+		return false
+	}
+	return jobref.KindFromClass(m.job.GetDetails().Class) == jobref.KindPipeline
 }
 
 // jobURL returns the canonical URL for this job, regardless of how the model

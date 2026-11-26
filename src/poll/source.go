@@ -55,13 +55,13 @@ type observationSource interface {
 type jenkinsSource struct{ jenkins *gojenkins.Jenkins }
 
 func (s jenkinsSource) fetchWindow(ctx context.Context, jobURL string, cursor BuildNumber) (Observation, error) {
-	job, err := s.resolveJob(ctx, jobURL)
+	job, err := s.jobRef(jobURL)
 	if err != nil {
 		return Observation{}, classifySource("resolve job", Target{Kind: TargetJobWindow, JobURL: jobURL}, false, err)
 	}
-	query := url.Values{"fullStages": {"true"}}
+	var query url.Values
 	if cursor > 0 {
-		query.Set("since", "#"+strconv.FormatInt(int64(cursor), 10))
+		query = url.Values{"since": {"#" + strconv.FormatInt(int64(cursor), 10)}}
 	}
 	var runs []gojenkins.PipelineRun
 	if err := fetchJSON(ctx, job, job.Base+"/wfapi/runs", query, &runs); err != nil {
@@ -75,7 +75,7 @@ func (s jenkinsSource) fetchWindow(ctx context.Context, jobURL string, cursor Bu
 }
 
 func (s jenkinsSource) fetchExact(ctx context.Context, target Target) (Observation, error) {
-	job, err := s.resolveJob(ctx, target.JobURL)
+	job, err := s.jobRef(target.JobURL)
 	if err != nil {
 		return Observation{}, classifySource("resolve job", target, true, err)
 	}
@@ -91,12 +91,12 @@ func (s jenkinsSource) fetchExact(ctx context.Context, target Target) (Observati
 	return Observation{Target: target, ObservedAt: time.Now(), Runs: runs}, nil
 }
 
-func (s jenkinsSource) resolveJob(ctx context.Context, jobURL string) (*gojenkins.Job, error) {
+func (s jenkinsSource) jobRef(jobURL string) (*gojenkins.Job, error) {
 	if s.jenkins == nil {
 		return nil, errors.New("jenkins client is not initialized")
 	}
 	id, parents := jobref.ToIDAndParents(jobURL)
-	return s.jenkins.GetJob(ctx, id, parents...)
+	return s.jenkins.JobRef(id, parents...), nil
 }
 
 func fetchJSON(ctx context.Context, job *gojenkins.Job, endpoint string, query url.Values, dst any) error {
@@ -190,7 +190,7 @@ func confirmCompletion(ctx context.Context, job *gojenkins.Job, number BuildNumb
 	var state struct {
 		Building bool `json:"building"`
 	}
-	if err := fetchJSON(ctx, job, job.Base+"/"+strconv.FormatInt(int64(number), 10), nil, &state); err != nil {
+	if err := fetchJSON(ctx, job, job.Base+"/"+strconv.FormatInt(int64(number), 10), url.Values{"tree": {"building"}}, &state); err != nil {
 		return false, err
 	}
 	return !state.Building, nil

@@ -114,7 +114,7 @@ $J down perf
 Only one DEVELOPMENT instance can own :6060 at a time. A live profile is a
 single run with no A/B. Use it to locate hot spots, not to claim a delta.
 
-## Reference points (same i5-10310U)
+## Reference points
 
 Absolute numbers depend on the machine. Compare A/B on one machine, and do not
 reuse these numbers across hosts. Each label below is a capture under
@@ -140,10 +140,11 @@ cost.
 
 ### Job navigation non-regression (`nav-1`, 2026-11-07)
 
-AMD Ryzen 7 1700X, Go 1.26.8; `nav-1-base` is commit `f675c59`,
+Go 1.26.8; `nav-1-base` is commit `f675c59`,
 `nav-1-head` is the uncommitted navigation change on that commit. Five
 interleaved 10 s rounds, ten replay samples per side; both sanity checks pass.
-These numbers are not comparable to the i5 reference points above.
+These numbers were captured on a different host and are not comparable to the
+earlier reference points above.
 
 | Metric | `nav-1-base` | `nav-1-head` | Verdict |
 | --- | ---: | ---: | --- |
@@ -159,7 +160,7 @@ The animation workload does not measure navigation latency.
 
 ### Unknown-kind navigation (`nav-2-final`, 2026-11-08)
 
-AMD Ryzen 7 1700X, Go 1.26.8; base is `f675c59`, head is the
+Go 1.26.8; base is `f675c59`, head is the
 uncommitted nav-1 + nav-2 worktree. Five interleaved 10 s rounds and ten
 replay samples per side; both sanity checks pass. Benchstat was unavailable;
 these are the CLI's median/range verdicts.
@@ -182,7 +183,7 @@ resolution is separate from classification and is not included in these numbers.
 
 ### Trigger feedback (`trigger-1`, 2026-11-08)
 
-AMD Ryzen 7 1700X, Go 1.26.8; base `f675c59`, head is the uncommitted
+Go 1.26.8; base `f675c59`, head is the uncommitted
 nav-1 + nav-2 + trigger-1 worktree. Five interleaved 10 s rounds, ten replay
 samples per side; both sanity checks pass. Benchstat unavailable.
 
@@ -212,7 +213,7 @@ the wait is drawn changed. Request counts are unchanged.
 
 ### Shared job startup runs (`fetchjob-poll-1-final`, 2026-11-08)
 
-AMD Ryzen 7 1700X, Go 1.26.8; base `f675c59`, head is the uncommitted
+Go 1.26.8; base `f675c59`, head is the uncommitted
 nav-1 + nav-2 + trigger-1 + fetchjob-poll-1 worktree, including routed startup
 failure feedback. Five interleaved 10 s rounds, ten replay samples per side;
 both sanity checks pass. Benchstat unavailable.
@@ -236,6 +237,37 @@ There is no timed fallback or additional happy-path runs query.
 The standalone nil-manager path retains one job + one full-stage runs query.
 Earlier navigation/trigger reference counts above describe their historical
 startup behavior before this coordination change.
+
+### Fast job startup and classic stage view (`job-fast-load-v2`, 2026-11-26)
+
+Go 1.27.4; base is `d2952df`, head is the uncommitted
+fast-load worktree (`JobRef` in poller, classic `/wfapi/runs` without
+`fullStages=true`, projected `?tree=` job details without `builds`,
+live-synced 10-run `Builds` column, and stale-while-revalidate instant revisit
+from a resolved pipeline job + poll replay). Five interleaved 10 s rounds, ten
+replay samples per side (`load1` 2.47 → 1.05); both sanity checks pass.
+Benchstat was unavailable; these are the CLI's median/range verdicts.
+
+| Metric | `job-fast-load-v2-base` | `job-fast-load-v2-head` | Verdict |
+| --- | ---: | ---: | --- |
+| Replay | 653.4 µs/op (620.4–820.9) | 627.6 µs/op (608.8–735.6) | ranges-overlap |
+| `Model.View` CPU / 10 s | 90 ms (70–120) | 110 ms (60–140) | ranges-overlap |
+| Renderer CPU / 10 s | 220 ms (170–260) | 220 ms (190–260) | negligible |
+| Terminal writes/s | 12.19 | 12.20 | negligible |
+
+No measurable rendering difference; renderer cell/style/buffer work
+(`ultraviolet.(*Style).Equal`, `(*Cell).Equal`, `(*RenderBuffer).TouchLine`)
+remains the limiter. The startup improvement is pinned by
+`TestJobStartupSharesPollRuns` (150 ms/req fake Jenkins with a real poll
+manager): total requests dropped from 3 (2 serial RTTs, ~305 ms) to 2 parallel
+requests (1 RTT, 154.3 ms ready paint). Revisiting a resolved pipeline job
+(`Back`/`Forward` or `ctrl+j` from the build page) with a warm poll replay
+renders immediately in 0 ms while refreshing metadata in the background
+(`TestResolvedPipelineRevisitRendersImmediatelyFromReplay`). Against local
+Jenkins LTS (`DevTeam/Frontend/mobile-app`, 46 builds), `/api/json` shrank
+from 8,620 B (×2) to 374 B (×1) and `/wfapi/runs` shrank from 102,372 B
+(`fullStages=true`) to 22,576 B (classic), cutting initial transfer by 80.8%
+(119.6 KB → 23.0 KB).
 
 ### Build page (`--page build`)
 

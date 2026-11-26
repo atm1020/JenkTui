@@ -37,16 +37,19 @@ func TestJobStartupSharesPollRuns(t *testing.T) {
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(path, "wfapi/runs") {
-			stages := `[]`
-			if r.URL.Query().Get("fullStages") == "true" {
-				stages = `[{"id":"1","name":"Compile","status":"SUCCESS"}]`
+			if r.URL.Query().Get("fullStages") != "" {
+				t.Errorf("runs request unexpectedly passed fullStages=%q", r.URL.Query().Get("fullStages"))
 			}
-			_, _ = w.Write([]byte(`[{"id":"12","name":"#12","status":"SUCCESS","endTimeMillis":2,"stages":` + stages + `}]`))
+			_, _ = w.Write([]byte(`[{"id":"12","name":"#12","status":"SUCCESS","endTimeMillis":2,"stages":[{"id":"1","name":"Compile","status":"SUCCESS"}]}]`))
 		} else {
-			if r.URL.Query().Get("tree") != "" {
-				t.Error("job record must remain unfiltered for trigger parameters")
+			tree := r.URL.Query().Get("tree")
+			if tree != jobDetailsTree {
+				t.Errorf("job tree = %q, want %q", tree, jobDetailsTree)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"name": "pipe", "url": "http://" + r.Host + "/job/pipe/", "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob", "builds": []map[string]any{{"number": 12}}, "property": []map[string]any{{"parameterDefinitions": []map[string]string{{"name": "BRANCH", "type": "StringParameterDefinition"}}}}})
+			if strings.Contains(tree, "builds[") {
+				t.Errorf("job tree must not fetch builds list: %q", tree)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "pipe", "url": "http://" + r.Host + "/job/pipe/", "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob", "property": []map[string]any{{"parameterDefinitions": []map[string]string{{"name": "BRANCH", "type": "StringParameterDefinition"}}}}})
 		}
 	}))
 	defer server.Close()
@@ -116,10 +119,13 @@ func TestJobStartupSharesPollRuns(t *testing.T) {
 		}
 	}
 	t.Logf("total requests: %d", len(hits))
-	if len(hits) != 3 || runs != 1 {
-		t.Errorf("requests=%d runs=%d, want 3 and 1", len(hits), runs)
+	if len(hits) != 2 || runs != 1 {
+		t.Errorf("requests=%d runs=%d, want 2 and 1", len(hits), runs)
 	}
 	if model.job == nil || len(model.job.Raw.Property) != 1 || len(model.job.Raw.Property[0].ParameterDefinitions) != 1 || model.job.Raw.Property[0].ParameterDefinitions[0].Name != "BRANCH" {
-		t.Fatal("full job parameters lost")
+		t.Fatal("trigger parameters lost")
+	}
+	if items := model.jobList.list.Items(); len(items) != 1 || items[0].(BuildListItem).BuildId != "#12" {
+		t.Fatalf("jobList items = %#v, want [#12] derived from stage runs", items)
 	}
 }

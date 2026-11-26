@@ -183,11 +183,21 @@ func TestSelectionLoadingResizeAndPollInvalidateCachedSections(t *testing.T) {
 	poisonSection(&page.frame.health, "HEALTH_CACHE")
 	page.applySnapshotData(finishedAnimationRuns(page), false)
 	polled := page.View()
-	if strings.Contains(polled, "JOB_CACHE") || strings.Contains(polled, "HEALTH_CACHE") {
-		t.Fatal("polling reused the job list or in-progress health panel")
+	if !strings.Contains(polled, "JOB_CACHE") {
+		t.Fatal("polling with unchanged build IDs rebuilt the job list")
+	}
+	if strings.Contains(polled, "HEALTH_CACHE") {
+		t.Fatal("polling reused the in-progress health panel")
 	}
 	if !strings.Contains(ansi.Strip(polled), "Polled") {
 		t.Fatal("polling did not render the updated stage")
+	}
+
+	newRuns := append([]gojenkins.PipelineRun{*fakePipelineRun("121", 6, "IN_PROGRESS")}, finishedAnimationRuns(page)...)
+	page.applySnapshotData(newRuns, true)
+	withNewBuild := page.View()
+	if strings.Contains(withNewBuild, "JOB_CACHE") || !strings.Contains(ansi.Strip(withNewBuild), "#121") {
+		t.Fatal("polling with a new build reused a stale job list")
 	}
 
 	page.View()
