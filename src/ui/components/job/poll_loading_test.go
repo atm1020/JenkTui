@@ -4,6 +4,7 @@ import (
 	stdctx "context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,8 +21,8 @@ func primedJobPoll(t *testing.T) (*appcontext.ProgramContext, poll.Snapshot) {
 		if r.URL.Path == "/job/demo/api/json" {
 			_, _ = w.Write([]byte(`{"name":"demo","url":"http://` + r.Host + `/job/demo/","_class":"org.jenkinsci.plugins.workflow.job.WorkflowJob"}`))
 		} else {
-			if r.URL.Query().Get("fullStages") != "true" {
-				t.Error("runs request omitted fullStages=true")
+			if r.URL.Query().Get("fullStages") != "" {
+				t.Errorf("runs request unexpectedly set fullStages=%q", r.URL.Query().Get("fullStages"))
 			}
 			_, _ = w.Write([]byte(`[{"id":"42","status":"SUCCESS","endTimeMillis":2,"stages":[{"id":"1","name":"Compile","status":"SUCCESS"}]}]`))
 		}
@@ -145,4 +146,42 @@ func TestJobStandaloneLoadsFullStages(t *testing.T) {
 	if model.loading || len(model.stageView.pipelineRuns) != 1 || len(model.stageView.pipelineRuns[0].Stages) != 1 {
 		t.Fatal("standalone load failed")
 	}
+}
+
+func TestResolvedPipelineRevisitRendersImmediatelyFromReplay(t *testing.T) {
+	ctx, snapshot := primedJobPoll(t)
+	resolvedJob, err := ctx.Jenkins.GetJob(stdctx.Background(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Case 1: NewModel with an already-resolved pipeline job (e.g. ctrl+j from build page).
+	model := NewModel(ctx, 160, 45, resolvedJob)
+	defer func() { _ = model.CleanUp() }()
+
+	_ = model.Init()
+	if model.loading || !model.jobLoaded || !model.runsLoaded {
+		t.Fatalf("revisit state = (loading=%v, jobLoaded=%v, runsLoaded=%v), want (false, true, true)", model.loading, model.jobLoaded, model.runsLoaded)
+	}
+	view := model.View()
+	if strings.Contains(view, "Loading") || !strings.Contains(view, "Compile") || !strings.Contains(view, "#42") {
+		t.Fatalf("instant revisit view missing cached content:\n%s", view)
+	}
+	if len(model.stageView.pipelineRuns) != 1 || model.stageView.pipelineRuns[0].Base != resolvedJob.Base+"/42" {
+		t.Fatalf("replayed run not bound to resolved job: %+v", model.stageView.pipelineRuns)
+	}
+	if items := model.jobList.list.Items(); len(items) != 1 || items[0].(BuildListItem).BuildId != "#42" {
+		t.Fatalf("builds list = %#v, want [#42]", items)
+	}
+
+	// Case 2: Router Back/Forward reuse (CleanUp followed by Init on the same model).
+	_ = model.CleanUp()
+	_ = model.Init()
+	if model.loading {
+		t.Fatal("router Back/Forward revisit fell back to loading state despite resolved job and replay")
+	}
+	if view := model.View(); strings.Contains(view, "Loading") || !strings.Contains(view, "Compile") {
+		t.Fatalf("router revisit view missing cached content:\n%s", view)
+	}
+	_ = snapshot
 }

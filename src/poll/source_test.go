@@ -14,12 +14,15 @@ import (
 
 func TestJenkinsSourceFetchesTypedWindowWithCursor(t *testing.T) {
 	var since string
+	var fullStages string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/job/demo/api/json":
-			_, _ = w.Write([]byte(`{"name":"demo","url":"/job/demo/"}`))
+			t.Errorf("unexpected job discovery request %s", r.URL.RequestURI())
+			http.NotFound(w, r)
 		case "/job/demo/wfapi/runs/api/json":
 			since = r.URL.Query().Get("since")
+			fullStages = r.URL.Query().Get("fullStages")
 			_ = json.NewEncoder(w).Encode([]map[string]any{{
 				"id": "42", "name": "demo #42", "status": "PAUSED_PENDING_INPUT",
 				"startTimeMillis": int64(1000), "durationMillis": int64(500),
@@ -39,6 +42,9 @@ func TestJenkinsSourceFetchesTypedWindowWithCursor(t *testing.T) {
 	if since != "#41" {
 		t.Fatalf("since = %q, want #41", since)
 	}
+	if fullStages != "" {
+		t.Fatalf("fullStages = %q, want omitted for classic stage view", fullStages)
+	}
 	if len(observation.Runs) != 1 || observation.Runs[0].BuildNumber != 42 || observation.Runs[0].Activity != buildstatus.ActivityPaused {
 		t.Fatalf("observation = %#v", observation)
 	}
@@ -47,14 +53,45 @@ func TestJenkinsSourceFetchesTypedWindowWithCursor(t *testing.T) {
 	}
 }
 
+func TestJenkinsSourceConfirmCompletionProjectsBuildingField(t *testing.T) {
+	var tree string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/job/demo/wfapi/runs/api/json":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id": "42", "name": "demo #42", "status": "NOT_EXECUTED",
+				"stages": []map[string]any{},
+			}})
+		case "/job/demo/42/api/json":
+			tree = r.URL.Query().Get("tree")
+			_, _ = w.Write([]byte(`{"building":false}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.RequestURI())
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	source := jenkinsSource{jenkins: gojenkins.CreateJenkins(nil, server.URL)}
+	observation, err := source.fetchWindow(context.Background(), server.URL+"/job/demo/", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree != "building" {
+		t.Fatalf("confirmCompletion tree = %q, want building", tree)
+	}
+	if len(observation.Runs) != 1 || observation.Runs[0].Activity != buildstatus.ActivityFinished {
+		t.Fatalf("observation = %#v, want finished activity", observation)
+	}
+}
+
 func TestJenkinsSourceRejectsUnsupportedBuildIDAsMalformed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/job/demo/api/json":
-			_, _ = w.Write([]byte(`{"name":"demo"}`))
 		case "/job/demo/wfapi/runs/api/json":
 			_, _ = w.Write([]byte(`[{"id":"branch-main","status":"SUCCESS","stages":[]}]`))
 		default:
+			t.Errorf("unexpected request %s", r.URL.RequestURI())
 			http.NotFound(w, r)
 		}
 	}))
@@ -71,7 +108,8 @@ func TestJenkinsSourceUsesOneCanceledContextForExactRequest(t *testing.T) {
 	canceled := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/job/demo/api/json" {
-			_, _ = w.Write([]byte(`{"name":"demo"}`))
+			t.Errorf("unexpected job discovery request %s", r.URL.RequestURI())
+			http.NotFound(w, r)
 			return
 		}
 		<-r.Context().Done()

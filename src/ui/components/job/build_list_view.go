@@ -86,16 +86,41 @@ func (jl *BuildListModel) selectedItem() (BuildListItem, bool) {
 	return item, ok
 }
 
-func (jl *BuildListModel) setItems(items []gojenkins.JobBuild) {
-	jl.renderRevision++
-	listItems := make([]list.Item, 0, len(items))
-	for _, job := range items {
+const maxBuildListItems = 10
+
+func (jl *BuildListModel) setRuns(runs []*gojenkins.PipelineRun) {
+	listItems := make([]list.Item, 0, min(len(runs), maxBuildListItems))
+	for _, run := range runs {
+		if run == nil || run.ID == "" || run.ID == queuedRunID {
+			continue
+		}
 		listItems = append(listItems, BuildListItem{
-			BuildId: fmt.Sprintf("#%d", job.Number),
-			Url:     job.URL,
+			BuildId: fmt.Sprintf("#%s", run.ID),
+			Url:     run.Base,
 		})
+		if len(listItems) == maxBuildListItems {
+			break
+		}
 	}
+	if buildListItemsEqual(jl.list.Items(), listItems) {
+		return
+	}
+	jl.renderRevision++
 	jl.list.SetItems(listItems)
+}
+
+func buildListItemsEqual(current, next []list.Item) bool {
+	if len(current) != len(next) {
+		return false
+	}
+	for i := range current {
+		a, okA := current[i].(BuildListItem)
+		b, okB := next[i].(BuildListItem)
+		if !okA || !okB || a != b {
+			return false
+		}
+	}
+	return true
 }
 
 func buildListModel() *list.Model {

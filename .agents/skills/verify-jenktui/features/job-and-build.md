@@ -11,14 +11,19 @@ and its stages, each with a status and duration.
   Back-key hint. Back returns to the caller; Forward reopens the message.
 - `job-header`: the job name, `Health Score: N%` (or
   `No health report available`), and the build stability text.
-- `job-builds`: a `Builds` column of `#N` boxes, newest first. A selected
-  build shows its date and duration.
-- `job-startup`: the first ready content includes full stage detail, without
-  a second runs fetch or a later stage pop-in. Loading requires both the full
-  job record and runs state; replay supplies runs, not job-request completion.
-  A startup poll failure replaces loading with `Could not load pipeline runs:`
-  plus the underlying error and Back hint. A successful retry restores stages;
-  refresh failures leave already-loaded runs usable.
+- `job-builds`: a `Builds` column of up to 10 `#N` boxes derived from the
+  classic stage view (`wfapi/runs`), newest first, staying live-synced as new
+  builds start. A selected build shows its date and duration.
+- `job-startup`: the first ready content includes stage summaries from classic
+  `/wfapi/runs` (without `fullStages=true`), without a second runs fetch or a
+  later stage pop-in. Cold URL opens wait for both the projected job record
+  (`?tree=` without `builds`) and runs state; replay supplies runs, not
+  cold job-request completion. Revisiting an already-resolved pipeline job
+  (`Back`/`Forward` or `ctrl+j` from a build page) with a warm replay renders
+  immediately while refreshing metadata in the background. A startup poll
+  failure replaces loading with `Could not load pipeline runs:` plus the
+  underlying error and Back hint. A successful retry restores stages; refresh
+  failures leave already-loaded runs usable.
 - `job-stages`: for each build, the stage boxes show the stage name and
   duration (for mobile-app: `Checkout`, `Dependencies`, `Lint`,
   `Unit Tests`, `Build iOS`, and more).
@@ -72,9 +77,10 @@ Steps:
     stage/pulse. Cross-check `building=true` in Jenkins, then the resolved
     intent and final `SUCCESS` row in runs.db. See the trigger recipe.
   - A local server can complete startup between terminal captures. The real
-    poll-manager request-count regression test pins one initial full-stage
-    runs query (three total requests), including snapshot/job ordering and
-    replay; terminal snapshots alone cannot prove request counts.
+    poll-manager request-count regression test pins two parallel initial
+    requests (one projected job query without `builds` and one classic
+    `wfapi/runs` query without `fullStages=true`), including snapshot/job
+    ordering and replay; terminal snapshots alone cannot prove request counts.
   - If initial polling fails, wait for `Could not load pipeline runs:` and
     `Back returns`, then snap the error and use Back to leave. Do not require
     build boxes on a failed load. Do not change shared Jenkins permissions to
@@ -136,12 +142,10 @@ Steps:
 
 ## Gotchas
 
-- **Stale Builds column (suspected app bug, seen 2026-10-03):** after a
-  trigger from the job page, the new build appears in the stage grid
-  (`#13` label with a spinner), but the left `Builds` column keeps showing
-  the previous top build for at least 25s. The selection also stays on the
-  old build, so `x` and `L` act on it. Leaving the page and reopening it
-  fixes the column. Wait for `#N` anywhere on screen, not for `│ #N │`.
+- The left `Builds` column is capped to the 10 runs returned by classic Stage
+  View (`wfapi/runs`), so older builds beyond the latest 10 do not appear in
+  the `Builds` filter. Newly triggered builds appear live in both `Builds` and
+  the stage grid as soon as polling observes them.
 - At 160 columns, only the first 5 to 7 stages fit. Later stages are cut
   off at the right edge. Do not assert on `Deploy`-type stage names unless
   you raised `JT_COLS`.

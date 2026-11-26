@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -362,15 +363,11 @@ func TestRunHistoryQuery_FiltersByCurrentJobName(t *testing.T) {
 func TestEnterOnBuildListOpensSelectedBuild(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	jenkins := gojenkins.CreateJenkins(nil, "http://jenkins")
-	builds := []gojenkins.JobBuild{
-		{Number: 42, URL: "http://jenkins/job/demo/42/"},
-		{Number: 41, URL: "http://jenkins/job/demo/41/"},
-	}
 	loadedJob := &gojenkins.Job{
 		Jenkins: jenkins,
 		Base:    "/job/demo",
 		Raw: &gojenkins.JobResponse{
-			Name: "demo", URL: "http://jenkins/job/demo/", Builds: builds,
+			Name: "demo", URL: "http://jenkins/job/demo/",
 		},
 	}
 	model := NewModel(&context.ProgramContext{Config: cfg, Jenkins: jenkins}, 100, 30, loadedJob)
@@ -380,7 +377,7 @@ func TestEnterOnBuildListOpensSelectedBuild(t *testing.T) {
 		{ID: "42", Job: loadedJob, Base: "/job/demo/42"},
 		{ID: "41", Job: loadedJob, Base: "/job/demo/41"},
 	})
-	model.jobList.setItems(builds)
+	model.syncBuildList()
 
 	assertOpensBuild := func(wantID string) {
 		t.Helper()
@@ -416,7 +413,7 @@ func TestBuildListSearchUsesConfiguredKeyAndCapturesQuery(t *testing.T) {
 	)
 	model.loading = false
 	model.activeView = JobListView
-	model.jobList.setItems([]gojenkins.JobBuild{{Number: 42}, {Number: 41}})
+	model.jobList.setRuns([]*gojenkins.PipelineRun{{ID: "42"}, {ID: "41"}})
 
 	_ = model.handleKeyPressMsg(tea.KeyPressMsg{Code: 's', Text: "s"})
 	if !model.jobList.IsFiltering() {
@@ -433,7 +430,7 @@ func TestBuildListSearchUsesConfiguredKeyAndCapturesQuery(t *testing.T) {
 
 func TestJobIsCapturingInputWhileBuildListFilters(t *testing.T) {
 	jl := &BuildListModel{list: buildListModel()}
-	jl.setItems([]gojenkins.JobBuild{{Number: 14}, {Number: 13}})
+	jl.setRuns([]*gojenkins.PipelineRun{{ID: "14"}, {ID: "13"}})
 	m := &Model{jobList: jl, activeView: JobListView}
 
 	if m.IsCapturingInput() {
@@ -678,46 +675,67 @@ func TestApplySnapshotData_UpdatesInProgressState(t *testing.T) {
 	}
 }
 
-func TestApplySnapshotData_UpdatesJobList(t *testing.T) {
-	builds := []gojenkins.JobBuild{
-		{Number: 1, URL: "http://jenkins/job/test/1/"},
-		{Number: 2, URL: "http://jenkins/job/test/2/"},
-	}
-
+func TestApplySnapshotData_UpdatesJobListFromStageRuns(t *testing.T) {
 	m := &Model{
-		ctx: &context.ProgramContext{},
-		job: &gojenkins.Job{
-			Raw: &gojenkins.JobResponse{
-				Builds: builds,
-			},
-		},
+		ctx:       &context.ProgramContext{},
 		stageView: &StageViewModel{pulseBar: animation.New(animation.Settings{Width: 32, FPS: 10})},
 		jobList:   &BuildListModel{list: buildListModel()},
 	}
 
 	m.applySnapshotData([]gojenkins.PipelineRun{
-		{ID: "1", Status: "SUCCESS"},
-	}, false)
+		{ID: "2", Base: "/job/test/2", Status: "IN_PROGRESS"},
+		{ID: "1", Base: "/job/test/1", Status: "SUCCESS"},
+	}, true)
 
-	if len(m.jobList.list.Items()) != len(builds) {
-		t.Errorf("jobList items = %d, want %d", len(m.jobList.list.Items()), len(builds))
+	items := m.jobList.list.Items()
+	if len(items) != 2 {
+		t.Fatalf("jobList items = %d, want 2", len(items))
+	}
+	if got := items[0].(BuildListItem).BuildId; got != "#2" {
+		t.Fatalf("first item = %q, want #2", got)
+	}
+
+	revBefore := m.jobList.renderRevision
+	m.applySnapshotData([]gojenkins.PipelineRun{
+		{ID: "2", Base: "/job/test/2", Status: "SUCCESS"},
+		{ID: "1", Base: "/job/test/1", Status: "SUCCESS"},
+	}, false)
+	if m.jobList.renderRevision != revBefore {
+		t.Fatalf("renderRevision bumped from %d to %d when build IDs did not change", revBefore, m.jobList.renderRevision)
+	}
+
+	m.applySnapshotData([]gojenkins.PipelineRun{
+		{ID: "3", Base: "/job/test/3", Status: "IN_PROGRESS"},
+		{ID: "2", Base: "/job/test/2", Status: "SUCCESS"},
+		{ID: "1", Base: "/job/test/1", Status: "SUCCESS"},
+	}, true)
+	if m.jobList.renderRevision == revBefore {
+		t.Fatal("renderRevision did not advance when a new build arrived")
+	}
+	if got := m.jobList.list.Items()[0].(BuildListItem).BuildId; got != "#3" {
+		t.Fatalf("newest item = %q, want #3", got)
 	}
 }
 
-func TestApplySnapshotData_NilJobSkipsJobListUpdate(t *testing.T) {
-	m := &Model{
-		ctx:       &context.ProgramContext{},
-		job:       nil,
-		stageView: &StageViewModel{pulseBar: animation.New(animation.Settings{Width: 32, FPS: 10})},
-		jobList:   &BuildListModel{list: buildListModel()},
+func TestBuildListCapsAtTenAndSkipsQueuedShadow(t *testing.T) {
+	jl := &BuildListModel{list: buildListModel()}
+	runs := make([]*gojenkins.PipelineRun, 0, 14)
+	runs = append(runs, &gojenkins.PipelineRun{ID: queuedRunID, Status: "QUEUED"})
+	for i := 12; i >= 1; i-- {
+		id := strconv.Itoa(i)
+		runs = append(runs, &gojenkins.PipelineRun{ID: id, Base: "/job/test/" + id})
 	}
 
-	m.applySnapshotData([]gojenkins.PipelineRun{
-		{ID: "1", Status: "SUCCESS"},
-	}, false)
-
-	if len(m.jobList.list.Items()) != 0 {
-		t.Errorf("jobList items = %d, want 0 when job is nil", len(m.jobList.list.Items()))
+	jl.setRuns(runs)
+	items := jl.list.Items()
+	if len(items) != maxBuildListItems {
+		t.Fatalf("jobList items = %d, want %d", len(items), maxBuildListItems)
+	}
+	if first := items[0].(BuildListItem).BuildId; first != "#12" {
+		t.Fatalf("first item = %q, want #12 (queued shadow skipped)", first)
+	}
+	if last := items[len(items)-1].(BuildListItem).BuildId; last != "#3" {
+		t.Fatalf("last item = %q, want #3", last)
 	}
 }
 
