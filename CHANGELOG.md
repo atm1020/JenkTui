@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.0-beta.6](https://github.com/atm1020/JenkTui/compare/v1.0.0-beta.5...v1.0.0-beta.6) (2026-11-27)
+
+
+### Features
+
+* build page opt ([e1c0294](https://github.com/atm1020/JenkTui/commit/e1c0294251ed01e3ca54a22306b1eb2eba501ae9))
+* build page opt ([ca98514](https://github.com/atm1020/JenkTui/commit/ca98514a263eab30dbccbb23bbccc39419f77446))
+* job page and polling opt ([a34ba25](https://github.com/atm1020/JenkTui/commit/a34ba2583bd7313b3b12560fcb14617a176ae28b))
+* job page and polling opt ([3546fe4](https://github.com/atm1020/JenkTui/commit/3546fe4ae591ebb13f570349c97707c79449f9b7))
+
 ## [1.0.0-beta.5](https://github.com/atm1020/JenkTui/compare/v1.0.0-beta.4...v1.0.0-beta.5) (2026-11-23)
 
 
