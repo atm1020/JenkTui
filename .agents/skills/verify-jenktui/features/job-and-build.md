@@ -30,7 +30,13 @@ and its stages, each with a status and duration.
 - `job-nav`: `j`/`k` move between builds. `B`/`S` focus the builds pane or
   the stages pane.
 - `build-open`: Enter opens `Build #N` with `Started`, `Duration`,
-  `Status`, `Started by`, `Details`, `Node`, and `Artifacts`.
+  `Status`, `Started by`, `Details`, `Node`, and `Artifacts`. Opening from a
+  job page fetches projected build details (`?tree=` without `depth=1`) and
+  the initial stage node in parallel (1 RTT); opening from My Runs / URL-only
+  fetches projected job details (`?tree=` without `builds`), `wfapi/describe`,
+  and projected build details in parallel before the initial stage node
+  (2 RTTs), preserving instant `ctrl+b` triggers, `p` build params, artifact
+  downloads, browser open, and `ctrl+j` return to the job page.
 - `build-stages`: on the build page, `h`/`l` move the highlighted stage
   (drawn with a double border); `j`/`k` select a step in its details.
 - `build-step-log`: `ctrl+l` opens the selected flow step's log, not
@@ -106,6 +112,11 @@ Steps:
   - Wait for loaded details (`$J wait RUN 'Stage ID:'` on this completed
     pipeline) before further keys. The header alone can precede readiness.
     Capture `$J snap RUN build-page` while on the build page.
+  - Also verify opening a build from My Runs (`m`, wait for `#<N>`, Enter,
+    wait for `Build #<N>` and `Stage ID:`) and returning via `ctrl+j` to the
+    job page (`Health Score` and `│ #[0-9]+ │`). Request projections and
+    concurrency (1 RTT job→build, 2 RTTs My Runs→build) are pinned by
+    `src/ui/components/build/loading_test.go`.
 - **Move between stages.**
   - Run `$J keys RUN l`.
   - The double-bordered box moves from `Checkout` to `Dependencies`.
