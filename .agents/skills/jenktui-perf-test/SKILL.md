@@ -269,6 +269,69 @@ from 8,620 B (×2) to 374 B (×1) and `/wfapi/runs` shrank from 102,372 B
 (`fullStages=true`) to 22,576 B (classic), cutting initial transfer by 80.8%
 (119.6 KB → 23.0 KB).
 
+### Parallel stage view & timeline (`parallel-job` and `parallel-build`, 2026-11-27)
+
+Go 1.27.4 (`greenteagc`); base is `3546fe4`, head is the uncommitted
+parallel-stage-view worktree (unified `src/stagegraph` domain package, Job page
+Parallel Group Cards, Build page Stage Timeline View inside memoized
+`sections.flow`, and optional `pipeline-graph-view` client with per-server
+capability cache). Five interleaved 10 s rounds and ten replay samples per side;
+all sanity checks pass; benchstat unavailable (medians/ranges from CLI).
+
+**Job page (`--page job`):**
+
+| Metric | `parallel-job-base` | `parallel-job-head` | Verdict |
+| --- | ---: | ---: | --- |
+| Replay | 534.8 µs/op (528.7–573.1) | 542.9 µs/op (537.0–601.8) | negligible(<2%) |
+| `Model.View` CPU / 10 s | 90 ms (80–100) | 90 ms (80–120) | negligible(<2%) |
+| Renderer CPU / 10 s | 180 ms (160–200) | 190 ms (180–220) | ranges-overlap |
+| Terminal writes/s | 12.20 | 12.20 | negligible(<2%) |
+
+**Build page (`--page build`):**
+
+| Metric | `parallel-build-base` | `parallel-build-head` | Verdict |
+| --- | ---: | ---: | --- |
+| Replay | 12.29 µs/op (11.77–13.39) | 12.04 µs/op (11.86–12.31) | ranges-overlap |
+| Replay bytes/op | 23.7 KiB (23.7–23.8) | 21.7 KiB (21.7–21.7) | ranges-separate (-8.7%) |
+| Sampled CPU / 10 s | 260 ms (260–270) | 240 ms (240–250) | ranges-separate (-7.7%) |
+| `Model.View` CPU / 10 s | 30 ms (20–40) | 30 ms (30–40) | negligible(<2%) |
+| Renderer CPU / 10 s | 190 ms (150–200) | 190 ms (140–190) | negligible(<2%) |
+| Terminal writes/s | 12.19 | 12.19 | negligible(<2%) |
+
+No rendering regression on either page; renderer cell/grapheme/buffer work
+(`ultraviolet.printString`, `(*Buffer).Clear`, `(*Cell).Equal`) remains the
+limiter. On the build page, live 10 s allocations dropped from 211.9k to 157.0k
+(-25.9%, ranges-separate) while terminal bytes/s rose from 2.51 to 4.28 KB/s
+because the animated running bar spans the timeline width rather than a 14-char
+stage box.
+
+### Unified Build & inline Log page (`integrated-build-log`, 2026-11-27)
+
+Go 1.27.4 (`greenteagc`); base is `3546fe4`, head is the uncommitted
+unified Build + inline Log worktree (Omaci-inspired framed `build`/`stages`/
+`steps`/`log` layout, embedded `logviewer` with `/logText/progressiveHtml`
+indexing and 4 log scopes, memoized `sections.log` and framed `detailsSections`).
+Five interleaved 10 s rounds and ten replay samples per side (`load1` 3.12 → 1.24);
+both sanity checks pass; benchstat unavailable (medians/ranges from CLI).
+
+| Metric | `integrated-build-log-base` | `integrated-build-log-head` | Verdict |
+| --- | ---: | ---: | --- |
+| Replay | 31.1 µs/op (23.2–39.7) | 39.3 µs/op (33.5–62.4) | ranges-overlap |
+| Replay bytes/op | 23.8 KiB (23.8–23.8) | 37.8 KiB (37.8–37.8) | ranges-separate (+58.7%) |
+| Sampled CPU / 10 s | 840 ms (780–900) | 750 ms (710–780) | ranges-overlap |
+| `Model.View` CPU / 10 s | 100 ms (80–120) | 80 ms (70–90) | ranges-overlap |
+| Renderer CPU / 10 s | 600 ms (560–670) | 530 ms (510–580) | ranges-overlap |
+| Live allocations / 10 s | 212.4k (212.3k–216.0k) | 189.1k (188.9k–189.8k) | ranges-separate (-11.0%) |
+| Terminal writes/s | 12.28 | 12.19 | negligible(<2%) |
+| Terminal bytes/s | 2.52 KB | 4.90 KB | ranges-separate (+94.4%) |
+
+No rendering CPU regression (`Model.View` and renderer CPU ranges overlap while
+live 10 s allocations fell 11.0%, ranges-separate); renderer cell/buffer work
+(`ultraviolet.Line.Set`, `(*Cell).Equal`, `(*RenderBuffer).SetCell`) remains
+the limiter. Terminal bytes/s rose because the running stage pulse spans the
+framed timeline width and the compact header spinner updates both top-edge and
+row status badges.
+
 ### Build page (`--page build`)
 
 | | Baseline `build-115` (two spinner chains) | `build-116` (one frame clock) | `build-117` (placeholder frame cache) | Current `build-sections2` (section cache) |

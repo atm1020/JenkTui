@@ -189,6 +189,13 @@ type BuildKeyMapConfig struct {
 	PrevStage            KeyBinding `json:"prev_stage"`
 	Up                   KeyBinding `json:"up"`
 	Down                 KeyBinding `json:"down"`
+	SwitchPane           KeyBinding `json:"switch_pane"`
+	FocusBuild           KeyBinding `json:"focus_build"`
+	ZoomLog              KeyBinding `json:"zoom_log"`
+	LogScopeFull         KeyBinding `json:"log_scope_full"`
+	LogScopeStage        KeyBinding `json:"log_scope_stage"`
+	LogScopeStep         KeyBinding `json:"log_scope_step"`
+	LogScopeOutside      KeyBinding `json:"log_scope_outside"`
 	OpenStepLog          KeyBinding `json:"open_step_log"`
 	OpenFullLog          KeyBinding `json:"open_full_log"`
 	DownloadArtifacts    KeyBinding `json:"download_artifacts"`

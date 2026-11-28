@@ -2,8 +2,11 @@ package job
 
 import (
 	"fmt"
+	"image/color"
+	"strings"
 
 	"github.com/atm1020/jenktui/src/buildstatus"
+	"github.com/atm1020/jenktui/src/stagegraph"
 	"github.com/atm1020/jenktui/src/ui/animation"
 	"github.com/atm1020/jenktui/src/ui/styles"
 	"github.com/atm1020/jenktui/src/ui/util"
@@ -14,6 +17,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/atm1020/gojenkins"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const (
@@ -310,47 +314,205 @@ func (svm StageViewModel) renderRun(run *gojenkins.PipelineRun, idx int, boxWidt
 		row = append(row, svm.renderNoStageData(boxWidth))
 		return lipgloss.JoinHorizontal(lipgloss.Top, row...)
 	}
-	for _, stage := range run.Stages {
-		var cell, cellStatus string
-		var cellStyle lipgloss.Style
-
-		duration := util.FormatDuration(stage.Duration)
-		stageStatus := buildstatus.PipelineStatus(stage.Status)
-		activity, outcome := stageStatus.Activity(0), stageStatus.Outcome()
-		switch {
-		case activity == buildstatus.ActivityQueued,
-			activity == buildstatus.ActivityPending,
-			activity == buildstatus.ActivityPaused,
-			outcome == buildstatus.OutcomeUnstable:
-			cellStyle = t.S().StageBox.Pending
-			cellStatus = stageStatus.Label()
-		case activity == buildstatus.ActivityRunning:
-			cellStyle = t.S().StageBox.Running
-			cellStatus = svm.pulseBar.View()
-		case outcome == buildstatus.OutcomeSuccess:
-			cellStyle = t.S().StageBox.Success
-		case outcome == buildstatus.OutcomeFailure:
-			cellStyle = t.S().StageBox.Failed
-			cellStatus = stageStatus.Label()
-		case outcome == buildstatus.OutcomeAborted:
-			cellStyle = t.S().StageBox.Aborted
-			cellStatus = stageStatus.Label()
-		case outcome == buildstatus.OutcomeNotBuilt:
-			cellStyle = t.S().StageBox.NotExecuted
-			cellStatus = stageStatus.Label()
-			duration = "-"
+	graph := stagegraph.FromWFAPI(*run)
+	for i := range graph.Nodes {
+		node := &graph.Nodes[i]
+		if node.IsGroup() {
+			row = append(row, svm.renderParallelGroupCard(*node, boxWidth, t))
+			continue
 		}
-
-		cell = lipgloss.JoinVertical(lipgloss.Center,
-			util.TurncateString(stage.Name, boxWidth-4),
-			duration,
-			cellStatus,
-		)
-		cell = cellStyle.Width(boxWidth).Render(cell)
-		row = append(row, cell)
+		row = append(row, svm.renderSingleStageBox(*node, boxWidth, t))
 	}
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, row...)
+}
+
+func (svm StageViewModel) renderSingleStageBox(stage stagegraph.StageNode, boxWidth int, t *styles.Theme) string {
+	var cellStatus string
+	var cellStyle lipgloss.Style
+
+	duration := util.FormatDuration(stage.DurationMillis)
+	stageStatus := stage.Status
+	activity, outcome := stageStatus.Activity(0), stageStatus.Outcome()
+	switch {
+	case activity == buildstatus.ActivityQueued,
+		activity == buildstatus.ActivityPending,
+		activity == buildstatus.ActivityPaused,
+		outcome == buildstatus.OutcomeUnstable:
+		cellStyle = t.S().StageBox.Pending
+		cellStatus = stageStatus.Label()
+	case activity == buildstatus.ActivityRunning:
+		cellStyle = t.S().StageBox.Running
+		cellStatus = svm.pulseBar.View()
+	case outcome == buildstatus.OutcomeSuccess:
+		cellStyle = t.S().StageBox.Success
+	case outcome == buildstatus.OutcomeFailure:
+		cellStyle = t.S().StageBox.Failed
+		cellStatus = stageStatus.Label()
+	case outcome == buildstatus.OutcomeAborted:
+		cellStyle = t.S().StageBox.Aborted
+		cellStatus = stageStatus.Label()
+	case outcome == buildstatus.OutcomeNotBuilt:
+		cellStyle = t.S().StageBox.NotExecuted
+		cellStatus = stageStatus.Label()
+		duration = "-"
+	}
+
+	cell := lipgloss.JoinVertical(lipgloss.Center,
+		util.TurncateString(stage.Name, boxWidth-4),
+		duration,
+		cellStatus,
+	)
+	return cellStyle.Width(boxWidth).Render(cell)
+}
+
+const maxParallelCardBranches = 5
+
+func parallelCardWidth(boxWidth int) int {
+	switch {
+	case boxWidth >= StageBoxWidth:
+		return 30
+	case boxWidth >= 16:
+		return 24
+	default:
+		return 18
+	}
+}
+
+// renderParallelGroupCard renders a parallel stage group as a fixed-height card
+// matching StageBoxHeight so row heights, vertical scrolling, and viewport
+// windowing remain consistent.
+func (svm StageViewModel) renderParallelGroupCard(group stagegraph.StageNode, boxWidth int, t *styles.Theme) string {
+	cardW := parallelCardWidth(boxWidth)
+	// Rounded border (2) + horizontal padding (2) leaves cardW-4 inner cells.
+	innerW := max(8, cardW-4)
+
+	aggStatus := stagegraph.AggregateStatus(group.Children)
+	borderColor := parallelCardBorderColor(aggStatus, t)
+
+	lines := make([]string, 0, StageBoxHeight-2)
+	lines = append(lines, svm.renderParallelCardHeader(group, aggStatus, innerW, t))
+
+	visible, overflow := stagegraph.SelectCardBranches(group.Children, maxParallelCardBranches)
+	for i := range visible {
+		isLast := i == len(visible)-1 && overflow == 0
+		lines = append(lines, svm.renderParallelCardBranch(visible[i], isLast, innerW, t))
+	}
+	if overflow > 0 {
+		overflowText := fmt.Sprintf("└─ +%d more", overflow)
+		lines = append(lines, t.S().Base.Foreground(t.SubtleText).Render(ansi.Truncate(overflowText, innerW, "…")))
+	}
+
+	cardStyle := lipgloss.NewStyle().
+		Width(cardW).
+		Height(StageBoxHeight).
+		Padding(0, 1).
+		Align(lipgloss.Left).
+		AlignVertical(lipgloss.Top).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor)
+
+	return cardStyle.Render(strings.Join(lines, "\n"))
+}
+
+func (svm StageViewModel) renderParallelCardHeader(group stagegraph.StageNode, status buildstatus.PipelineStatus, innerW int, t *styles.Theme) string {
+	icon := svm.parallelCardStatusIcon(status, t)
+	dur := util.FormatDuration(group.DurationMillis)
+	durW := ansi.StringWidth(dur)
+	iconW := ansi.StringWidth(icon)
+	// Reserve: icon + " " + name + " " + dur
+	nameBudget := max(1, innerW-iconW-durW-2)
+	title := ansi.Truncate(group.Name, nameBudget, "…")
+	gap := max(1, innerW-iconW-1-ansi.StringWidth(title)-durW)
+
+	nameStyle := t.S().Base.Bold(true)
+	if status.Outcome() == buildstatus.OutcomeFailure {
+		nameStyle = nameStyle.Foreground(t.Error)
+	} else if status.Activity(0) == buildstatus.ActivityRunning {
+		nameStyle = nameStyle.Foreground(t.Primary)
+	}
+	return icon + " " + nameStyle.Render(title) + strings.Repeat(" ", gap) + t.S().Base.Foreground(t.SubtleText).Render(dur)
+}
+
+func (svm StageViewModel) renderParallelCardBranch(branch stagegraph.StageNode, isLast bool, innerW int, t *styles.Theme) string {
+	conn := "├─ "
+	if isLast {
+		conn = "└─ "
+	}
+	icon := svm.parallelCardStatusIcon(branch.Status, t)
+	var dur string
+	if branch.Status.Outcome() == buildstatus.OutcomeNotBuilt {
+		dur = "-"
+	} else {
+		dur = util.FormatDuration(branch.DurationMillis)
+	}
+
+	connW := ansi.StringWidth(conn)
+	iconW := ansi.StringWidth(icon)
+	durW := ansi.StringWidth(dur)
+	nameBudget := max(1, innerW-connW-iconW-durW-2)
+	name := ansi.Truncate(branch.Name, nameBudget, "…")
+	gap := max(1, innerW-connW-iconW-1-ansi.StringWidth(name)-durW)
+
+	nameStyle := t.S().Base
+	switch {
+	case branch.Status.Outcome() == buildstatus.OutcomeFailure:
+		nameStyle = nameStyle.Foreground(t.Error)
+	case branch.Status.Activity(0) == buildstatus.ActivityRunning:
+		nameStyle = nameStyle.Foreground(t.Primary)
+	case branch.Status.Activity(0) == buildstatus.ActivityPaused, branch.Status.Outcome() == buildstatus.OutcomeUnstable:
+		nameStyle = nameStyle.Foreground(t.Warning)
+	case branch.Status.Outcome() == buildstatus.OutcomeNotBuilt:
+		nameStyle = nameStyle.Foreground(t.SubtleText)
+	}
+
+	return t.S().Base.Foreground(t.SubtleText).Render(conn) +
+		icon + " " +
+		nameStyle.Render(name) +
+		strings.Repeat(" ", gap) +
+		t.S().Base.Foreground(t.SubtleText).Render(dur)
+}
+
+func (svm StageViewModel) parallelCardStatusIcon(status buildstatus.PipelineStatus, t *styles.Theme) string {
+	activity := status.Activity(0)
+	outcome := status.Outcome()
+	switch {
+	case outcome == buildstatus.OutcomeFailure:
+		return t.S().StyledIcons.Failure
+	case activity == buildstatus.ActivityRunning:
+		return svm.spinnerModel.View()
+	case activity == buildstatus.ActivityPaused:
+		return t.S().StyledIcons.Running
+	case outcome == buildstatus.OutcomeUnstable:
+		return t.S().Base.Foreground(t.Warning).Render(styles.WaitingIcon)
+	case outcome == buildstatus.OutcomeSuccess:
+		return t.S().StyledIcons.Success
+	case outcome == buildstatus.OutcomeAborted:
+		return t.S().Base.Foreground(t.Grey).Render(styles.NotBuildedIcon)
+	default:
+		return t.S().StyledIcons.NotBuilt
+	}
+}
+
+func parallelCardBorderColor(status buildstatus.PipelineStatus, t *styles.Theme) color.Color {
+	activity := status.Activity(0)
+	outcome := status.Outcome()
+	switch {
+	case outcome == buildstatus.OutcomeFailure:
+		return t.StageFailedBorder
+	case activity == buildstatus.ActivityRunning:
+		return t.StageRunningBorder
+	case activity == buildstatus.ActivityPaused, outcome == buildstatus.OutcomeUnstable:
+		return t.Warning
+	case activity == buildstatus.ActivityQueued, activity == buildstatus.ActivityPending:
+		return t.StagePendingBorder
+	case outcome == buildstatus.OutcomeAborted:
+		return t.StageAbortedBorder
+	case outcome == buildstatus.OutcomeSuccess:
+		return t.StageSuccessBorder
+	default:
+		return t.StageNotExecutedBorder
+	}
 }
 
 // renderNoStageData renders a placeholder box for a run with no stage graph,

@@ -445,6 +445,56 @@ pipeline {
 			builds: []map[string]string{nil, nil},
 		},
 		{
+			name:    "webapp-parallel-long",
+			parents: []string{"DevTeam", "Frontend"},
+			desc:    "Longer-running parallel pipeline for observing live parallel progress across staggered branch completions",
+			config: pipelineXML("Longer-running parallel pipeline for observing live parallel progress", `
+pipeline {
+    agent any
+    stages {
+        stage('Install') {
+            steps {
+                echo 'Installing dependencies...'
+                sh 'sleep 2'
+            }
+        }
+        stage('Parallel Tests') {
+            parallel {
+                stage('Unit') {
+                    steps {
+                        echo 'Running unit test suite...'
+                        sh 'sleep 18'
+                        echo '240 unit tests passed.'
+                    }
+                }
+                stage('Integration') {
+                    steps {
+                        echo 'Running integration test suite...'
+                        sh 'sleep 26'
+                        echo '64 integration tests passed.'
+                    }
+                }
+                stage('Lint') {
+                    steps {
+                        echo 'Running linter and typecheck...'
+                        sh 'sleep 10'
+                        echo 'No linting errors found.'
+                    }
+                }
+            }
+        }
+        stage('Bundle') {
+            steps {
+                echo 'Creating production bundle...'
+                sh 'sleep 2'
+                echo 'Bundle size: 1.2MB'
+            }
+        }
+    }
+}`),
+			builds: []map[string]string{nil},
+		},
+		{
 			name:    "mobile-app",
 			parents: []string{"DevTeam", "Frontend"},
 			desc:    "Mobile app pipeline with many stages for wide stage view",

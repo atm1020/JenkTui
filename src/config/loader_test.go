@@ -229,6 +229,27 @@ func TestGetDefaultConfig(t *testing.T) {
 	if len(cfg.KeyMapConfig.Build.DownloadAllArtifacts) == 0 {
 		t.Error("Build.DownloadAllArtifacts should not be empty in default config")
 	}
+	if !reflect.DeepEqual(cfg.KeyMapConfig.Build.SwitchPane, kb("tab", "shift+tab")) {
+		t.Errorf("Build.SwitchPane = %v, want [tab shift+tab]", cfg.KeyMapConfig.Build.SwitchPane)
+	}
+	if !reflect.DeepEqual(cfg.KeyMapConfig.Build.FocusBuild, kb("ctrl+h")) {
+		t.Errorf("Build.FocusBuild = %v, want [ctrl+h]", cfg.KeyMapConfig.Build.FocusBuild)
+	}
+	if !reflect.DeepEqual(cfg.KeyMapConfig.Build.ZoomLog, kb("z")) {
+		t.Errorf("Build.ZoomLog = %v, want [z]", cfg.KeyMapConfig.Build.ZoomLog)
+	}
+	if !reflect.DeepEqual(cfg.KeyMapConfig.Build.LogScopeFull, kb("1")) {
+		t.Errorf("Build.LogScopeFull = %v, want [1]", cfg.KeyMapConfig.Build.LogScopeFull)
+	}
+	if !reflect.DeepEqual(cfg.KeyMapConfig.Build.LogScopeStage, kb("2")) {
+		t.Errorf("Build.LogScopeStage = %v, want [2]", cfg.KeyMapConfig.Build.LogScopeStage)
+	}
+	if !reflect.DeepEqual(cfg.KeyMapConfig.Build.LogScopeStep, kb("3")) {
+		t.Errorf("Build.LogScopeStep = %v, want [3]", cfg.KeyMapConfig.Build.LogScopeStep)
+	}
+	if !reflect.DeepEqual(cfg.KeyMapConfig.Build.LogScopeOutside, kb("4")) {
+		t.Errorf("Build.LogScopeOutside = %v, want [4]", cfg.KeyMapConfig.Build.LogScopeOutside)
+	}
 	if !reflect.DeepEqual(cfg.KeyMapConfig.MyRuns.OpenJob, kb("ctrl+j")) {
 		t.Errorf("MyRuns.OpenJob = %v, want ctrl+j", cfg.KeyMapConfig.MyRuns.OpenJob)
 	}

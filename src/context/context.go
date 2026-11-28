@@ -2,9 +2,11 @@ package context
 
 import (
 	stdctx "context"
+	"sync"
 	"time"
 
 	"github.com/atm1020/jenktui/src/poll"
+	"github.com/atm1020/jenktui/src/stagegraph"
 	"github.com/atm1020/jenktui/src/store"
 
 	pocApi "github.com/atm1020/gojenkins"
@@ -62,12 +64,14 @@ const (
 )
 
 type ProgramContext struct {
-	Jenkins      *pocApi.Jenkins
-	ServerConfig *ServerConfig  // Currently selected server
-	Servers      []ServerConfig // All configured servers
-	Config       *Config        // Application configuration
-	RunStore     *store.Store   // Persistent store for user-triggered builds
-	PollManager  *poll.Manager  // Active polling manager (set after Jenkins init)
+	Jenkins           *pocApi.Jenkins
+	ServerConfig      *ServerConfig               // Currently selected server
+	Servers           []ServerConfig              // All configured servers
+	Config            *Config                     // Application configuration
+	RunStore          *store.Store                // Persistent store for user-triggered builds
+	PollManager       *poll.Manager               // Active polling manager (set after Jenkins init)
+	GraphCapabilities *stagegraph.CapabilityCache // Per-server pipeline-graph-view capability cache
+	graphCapMu        sync.Mutex
 
 	// Base directories
 	ConfigDir string
@@ -77,6 +81,49 @@ type ProgramContext struct {
 	// Data subdirectories (for permanent storage)
 	DataLogsDir      string // ~/.local/share/JenkTui/logs
 	DataArtifactsDir string // ~/.local/share/JenkTui/artifacts
+}
+
+// GraphCapabilityCache returns the thread-safe per-server pipeline-graph-view
+// capability cache, creating it lazily if not yet initialized.
+func (c *ProgramContext) GraphCapabilityCache() *stagegraph.CapabilityCache {
+	if c == nil {
+		return nil
+	}
+	c.graphCapMu.Lock()
+	defer c.graphCapMu.Unlock()
+	if c.GraphCapabilities == nil {
+		c.GraphCapabilities = stagegraph.NewCapabilityCache()
+	}
+	return c.GraphCapabilities
+}
+
+// ResetGraphCapabilities clears cached pipeline-graph-view probe results (for
+// example when switching Jenkins servers).
+func (c *ProgramContext) ResetGraphCapabilities() {
+	if c == nil {
+		return
+	}
+	c.graphCapMu.Lock()
+	cache := c.GraphCapabilities
+	c.graphCapMu.Unlock()
+	if cache != nil {
+		cache.Reset()
+	}
+}
+
+// GraphServerKey returns a stable key scoping graph capabilities to the active
+// Jenkins server.
+func (c *ProgramContext) GraphServerKey() string {
+	if c == nil {
+		return ""
+	}
+	if c.ServerConfig != nil && c.ServerConfig.ID != "" {
+		return c.ServerConfig.ID
+	}
+	if c.Jenkins != nil {
+		return c.Jenkins.Server
+	}
+	return ""
 }
 
 // RequestContext bounds a single Jenkins API call. Callers own the CancelFunc.

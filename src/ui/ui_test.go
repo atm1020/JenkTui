@@ -450,6 +450,80 @@ func TestFailedDurableNotificationIsReleasedWithoutAcknowledgement(t *testing.T)
 	}
 }
 
+func TestCompletionRetryDoesNotRepeatFooter(t *testing.T) {
+	for _, failure := range []string{"desktop", "acknowledgement"} {
+		t.Run(failure, func(t *testing.T) {
+			manager := poll.NewManager(nil, nil, poll.Config{})
+			defer manager.Stop()
+			cfg := config.GetDefaultConfig()
+			cfg.Notification.DesktopEnabled = true
+			notifier := &recordingDesktopNotifier{}
+			if failure == "desktop" {
+				notifier.err = errors.New("desktop unavailable")
+			}
+			app := &App{
+				ctx:    &context.ProgramContext{Config: cfg, PollManager: manager},
+				router: router.NewRouter(), desktopNotifier: notifier,
+			}
+			completion := poll.Completion{
+				Key:    poll.CompletionKey{JobURL: "http://jenkins/job/demo/", BuildNumber: 93, Kind: "finished"},
+				Status: "SUCCESS",
+			}
+			acknowledged := 0
+			delivery := pollDeliveryMsg{manager: manager, delivery: poll.Delivery{
+				Batch: poll.Batch{Completions: []poll.Completion{completion}},
+				Ack: func(_ stdcontext.Context, keys []poll.CompletionKey) error {
+					if failure == "acknowledgement" {
+						return errors.New("database unavailable")
+					}
+					acknowledged += len(keys)
+					return nil
+				},
+			}}
+			footers := 0
+			for range 3 {
+				batch := app.handlePollDelivery(delivery)().(tea.BatchMsg)
+				// The first command waits for the next poll delivery; drive only
+				// the completion sequence, just as the event loop would.
+				for _, msg := range collectCmdMsgs(batch[1]) {
+					switch msg := msg.(type) {
+					case util.FooterNotiMsg:
+						footers++
+					case completionDeliveryDoneMsg:
+						app.handleCompletionDeliveryDone(msg)
+					}
+				}
+			}
+			if footers != 1 {
+				t.Errorf("footer shown %d times for the same completion, want 1", footers)
+			}
+			if notifier.calls != 3 {
+				t.Errorf("desktop attempts = %d, want 3", notifier.calls)
+			}
+			if acknowledged != 0 {
+				t.Errorf("acknowledged = %d, want failed deliveries kept pending", acknowledged)
+			}
+			// Recovery must still deliver and acknowledge the pending completion.
+			notifier.err = nil
+			failure = "recovered"
+			batch := app.handlePollDelivery(delivery)().(tea.BatchMsg)
+			for _, msg := range collectCmdMsgs(batch[1]) {
+				if _, ok := msg.(util.FooterNotiMsg); ok {
+					t.Error("recovery repeated the footer")
+				}
+			}
+			if acknowledged != 1 {
+				t.Errorf("acknowledged after recovery = %d, want 1", acknowledged)
+			}
+			delivery.delivery.Batch.Completions[0].Key.BuildNumber = 94
+			batch = app.handlePollDelivery(delivery)().(tea.BatchMsg)
+			if notice := firstFooterNotification(t, batch[1]); !strings.Contains(notice.Message, "#94") {
+				t.Errorf("new completion footer = %q, want build #94", notice.Message)
+			}
+		})
+	}
+}
+
 func TestBuildCompletionNotificationUsesFriendlyStatus(t *testing.T) {
 	manager := poll.NewManager(nil, nil, poll.Config{})
 	defer manager.Stop()

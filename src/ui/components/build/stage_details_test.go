@@ -23,10 +23,11 @@ func TestStageDetailsViewSetsViewportBorderWidthToFullComponentWidth(t *testing.
 		Status: string(buildstatus.StatusSuccess),
 	}
 
-	details.View()
-
-	if got := details.viewport.Style.GetWidth(); got != width {
-		t.Fatalf("viewport style width = %d, want %d", got, width)
+	rendered := ansi.Strip(details.View())
+	for i, line := range strings.Split(rendered, "\n") {
+		if got := ansi.StringWidth(line); got != width {
+			t.Fatalf("line %d width = %d, want %d (%q)", i, got, width, line)
+		}
 	}
 }
 

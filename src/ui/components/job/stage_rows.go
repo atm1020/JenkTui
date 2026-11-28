@@ -11,10 +11,14 @@ import (
 )
 
 // stageStamp is the visible stage data that invalidates a cached row.
+// StartTime is included so live polling updates that alter parallel grouping
+// invalidate the affected row cleanly.
 type stageStamp struct {
-	name     string
-	status   string
-	duration int64
+	id        string
+	name      string
+	status    string
+	startTime int64
+	duration  int64
 }
 
 // windowCache is the fitted visible window. Unchanged lines are reused so an
@@ -115,7 +119,8 @@ func (c *StageRenderCache) matches(run *gojenkins.PipelineRun, selected bool, sv
 	}
 	for i := range run.Stages {
 		stage := &run.Stages[i]
-		if c.stages[i].name != stage.Name || c.stages[i].status != stage.Status || c.stages[i].duration != stage.Duration {
+		if c.stages[i].id != stage.ID || c.stages[i].name != stage.Name || c.stages[i].status != stage.Status ||
+			c.stages[i].startTime != stage.StartTime || c.stages[i].duration != stage.Duration {
 			return false
 		}
 	}
@@ -151,9 +156,11 @@ func newRowCache(run *gojenkins.PipelineRun, selected bool, lines []string, widt
 	}
 	for i := range run.Stages {
 		entry.stages[i] = stageStamp{
-			name:     run.Stages[i].Name,
-			status:   run.Stages[i].Status,
-			duration: run.Stages[i].Duration,
+			id:        run.Stages[i].ID,
+			name:      run.Stages[i].Name,
+			status:    run.Stages[i].Status,
+			startTime: run.Stages[i].StartTime,
+			duration:  run.Stages[i].Duration,
 		}
 	}
 	if showsSpinner || showsPulse {
@@ -195,6 +202,10 @@ func rowShowsAnimation(run *gojenkins.PipelineRun) (spinner, pulse bool) {
 	for i := range run.Stages {
 		if buildstatus.PipelineStatus(run.Stages[i].Status).Activity(0) == buildstatus.ActivityRunning {
 			pulse = true
+			// Running branches inside Parallel Group Cards animate with the
+			// stage spinner, so keep spinner invalidation active even if the
+			// run-level status differs.
+			spinner = true
 			break
 		}
 	}

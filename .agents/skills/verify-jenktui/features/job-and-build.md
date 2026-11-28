@@ -1,8 +1,13 @@
 # Job and build pages
 
 The job page shows a job's health and recent builds, with each build's
-stages laid out as a grid. Opening a build shows its metadata, its artifacts,
-and its stages, each with a status and duration.
+stages laid out as a grid (collapsing parallel blocks into fixed-height
+Parallel Group Cards). Opening a build shows an Omaci-inspired unified layout:
+a compact framed `build` summary bar, a framed `stages` Stage Timeline View
+plotted on a shared horizontal time axis with tree connectors and durations,
+and a split bottom area pairing a compact `steps` list on the left with an
+inline `log` viewer on the right (with instant stage/step jumping and 4 scopes:
+`[1] full`, `[2] stage`, `[3] step`, `[4] outside`, plus `[z]` tall-log zoom).
 
 ## Sub-features
 
@@ -24,18 +29,40 @@ and its stages, each with a status and duration.
   failure replaces loading with `Could not load pipeline runs:` plus the
   underlying error and Back hint. A successful retry restores stages; refresh
   failures leave already-loaded runs usable.
-- `job-stages`: for each build, the stage boxes show the stage name and
-  duration (for mobile-app: `Checkout`, `Dependencies`, `Lint`,
-  `Unit Tests`, `Build iOS`, and more).
+- `job-stages`: for each build, sequential stages render as stage boxes
+  showing name and duration (for mobile-app: `Checkout`, `Dependencies`,
+  `Lint`, `Unit Tests`, `Build iOS`, and more), while overlapping parallel
+  stages collapse into a single fixed-height Parallel Group Card with
+  `├─`/`└─` branch rows, status icons, durations, worst-status border color,
+  and `+N more` overflow when more than five branches exist (for
+  `webapp-build`: `Install`, `Parallel Tests { Unit, Integration, Lint }`,
+  `Bundle`).
 - `job-nav`: `j`/`k` move between builds. `B`/`S` focus the builds pane or
   the stages pane.
-- `build-open`: Enter opens `Build #N` with `Started`, `Duration`,
-  `Status`, `Started by`, `Details`, `Node`, and `Artifacts`.
-- `build-stages`: on the build page, `h`/`l` move the highlighted stage
-  (drawn with a double border); `j`/`k` select a step in its details.
-- `build-step-log`: `ctrl+l` opens the selected flow step's log, not
-  necessarily all output from that stage. The footer **stays** at
-  `…mobile-app  N` (no `console`).
+- `build-open`: Enter opens the framed `build` bar (`Build #N` with `Started`,
+  `Duration`, `Status`, `Started by`, `Details`, `Node`, and `Artifacts`), the
+  framed `stages` timeline, and the split `steps` + inline `log` panes. Opening
+  a failed or running build auto-focuses the first failed navigable stage (or
+  active stage if none failed), loads its steps, and loads + indexes the inline
+  console log (jumping to the focused stage/step line).
+- `build-stages`: on the build page, stages render inside the `stages` frame as
+  a Stage Timeline View (`STAGE` / time axis / `DUR`) with half-block bars (`▄`,
+  shaded/pulsing bars and a live `now` marker while running) and `├─`/`└─` tree
+  connectors for parallel branches. `h`/`l` move the focused stage marker (`▸`),
+  skipping empty Declarative parallel wrapper headings and jumping the inline
+  log to that stage; `j`/`k` select a compact single-line step in the `steps`
+  pane and jump/update the inline log.
+- `build-inline-log`: the right-hand `log` pane supports 4 scopes via `1`
+  (`full` with stage/step jumping), `2` (`stage`, cleanly de-interleaved across
+  parallel branches via `/logText/progressiveHtml`), `3` (`step`), and `4`
+  (`outside`, showing Pre-stage setup and Post-stage errors/stacktraces outside
+  stages). `Tab`/`Shift+Tab` and `ctrl+h`/`ctrl+l` switch focus between `steps`
+  and `log`; `z` toggles zoomed tall-log mode (`Esc` unzooms); `L` toggles full
+  console log ↔ scoped step/stage log.
+- `build-step-log`: `ctrl+l` focuses the inline log pane on the selected flow
+  step (preserving the `Loading <stage> stage…` stale-details guard during
+  stage switches). The footer **stays** at `…mobile-app  N` (no `console`) in
+  scoped mode, and shows `…console` when focused on Full Console log.
 - `build-help`: `?` expands the footer into the full key list for the page.
 - `build-params`: `p` shows build parameters, or `No parameters used for
   this build` when empty.
@@ -108,32 +135,53 @@ Steps:
     Capture `$J snap RUN build-page` while on the build page.
 - **Move between stages.**
   - Run `$J keys RUN l`.
-  - The double-bordered box moves from `Checkout` to `Dependencies`.
-- **Switch stage and open its step log at once.**
-  - First restore Checkout with `h` and wait for its details (for this
-    fixture, `Stage ID: 6`). Then send `$J keys RUN l C-l` together.
-    If the footer reports `Loading Dependencies stage…`, wait for the
-    new details and press `C-l` again, then `$J wait RUN 'Loaded:'`.
-  - The log shows the **Dependencies** output (`Installing pods/gradle deps...`),
-    never Checkout's (`Checking out source...`). If you press `ctrl+l` before
-    the details have loaded, the footer may first say
-    `Loading Dependencies stage…`; press it again. Then run `b` and `h` to
-    return to Checkout. Explicitly select the intended flow step before
-    asserting its output. This guards #119.
-- **Step log.**
-  - Select Dependencies with `l`, wait for its details (`Stage ID: 12`
-    for this fixture), and select its `Print Message` step with `j`/`k`.
-    Run `$J keys RUN C-l && $J wait RUN 'Loaded:'`.
-  - The screen shows that step's Dependencies output
-    (`Installing pods/gradle deps...`). Cross-check with
-    `$J jenkins RUN '/job/DevTeam/job/Frontend/job/mobile-app/<N>/consoleText' | grep -c 'Installing pods'`.
-  - Then run `$J keys RUN b && $J wait RUN 'Build #<N>'`.
-- **Full log from the build page.**
-  - Run `$J keys RUN L && $J crumb RUN '<N>.*console' && $J wait RUN 'Loaded:'`.
-  - For #557, the status line reads `Loaded: 1-73/73`, and `jt jenkins …/consoleText | wc -l`
-    gives 74 (`jt jenkins` appends a newline). Then run `b`.
+  - The timeline focus marker (`▸`) moves from `Checkout` to `Dependencies`.
+- **Parallel stages (`DevTeam/Frontend/webapp-build`).**
+  - Open `DevTeam/Frontend/webapp-build` via Global Search (`C-p`), wait for
+    `$J crumb RUN 'Frontend.*webapp-build'`, `$J wait RUN '│ #[0-9]+ │'`, and
+    `$J wait RUN 'Parallel Tests'`, then capture `$J snap RUN parallel-job-page`.
+  - Confirm `Parallel Tests` collapses `├─` `Unit`, `├─` `Integration`, and
+    `└─` `Lint` into one fixed-height Parallel Group Card between `Install`
+    and `Bundle` (and that any failed run's card uses the failure status icon
+    and border color).
+  - Open a completed build with `Enter`, wait for `$J wait RUN 'Stage ID:'`,
+    and capture `$J snap RUN parallel-build-page`. Confirm the Stage Timeline
+    View renders the `STAGE` / time-axis / `DUR` header, horizontal block
+    bars, and indented `├─`/`└─` parallel branches under `Parallel Tests`.
+  - Press `l` from `Install` and verify navigation skips the empty
+    `Parallel Tests` wrapper heading and focuses `Unit` directly (`steps ─ Unit`),
+    jumping the inline log to `Running unit tests...`. Press `2` (`Stage: Unit`)
+    to verify parallel branch de-interleaving (only `Unit` lines), `3` for step
+    scope, and `4` (`Outside Stages`) for Pre-stage & Post-stage lines.
+  - On a failed build (such as `#16` where `Integration` failed with an uncaught
+    post-stage `NoSuchMethodError`), verify smart auto-focus lands on `Integration`
+    and pressing `4` (`Outside Stages`) surfaces the Post-stage stacktrace.
+  - Trigger a live run (`C-b` → confirm `y`), wait for the new `#N` row and
+    final `SUCCESS` transition, then cross-check `$J db` (`runs` table) and
+    `$J jenkins` (`/job/DevTeam/job/Frontend/job/webapp-build/<N>/api/json`).
+  - For live mid-run parallel verification, open `DevTeam/Frontend/webapp-parallel-long`
+    (`Lint 10s`, `Unit 18s`, `Integration 26s`), trigger a live run (`C-b` → `y`),
+    and capture a mid-run snap while `Parallel Tests` is active: confirm the
+    in-progress row collapses into one `Parallel Tests` Parallel Group Card with
+    running spinners and live elapsed durations on all active branches (never
+    flattening into separate boxes or showing `0ms` for concurrent branches), and
+    stays in the running state even after `Lint` and `Unit` complete while
+    `Integration` is still running. Open the live build with `Enter` to confirm
+    the Build page Stage Timeline View renders the same grouped running branches
+    and live `now` marker.
+- **Switch stage and focus step log at once.**
+  - First restore Checkout with `h` and wait for its details (`steps ─ Checkout`).
+    Then send `$J keys RUN l C-l` together. If the footer reports
+    `Loading Dependencies stage…`, wait for `steps ─ Dependencies` and press
+    `C-l` again; confirm the inline log shows Dependencies output
+    (`Installing pods/gradle deps...`), never Checkout's. Return focus to steps
+    with `C-h`. This guards #119.
+- **Full log toggle & zoom from the build page.**
+  - Run `$J keys RUN L && $J crumb RUN '<N>.*console' && $J wait RUN 'Loaded:'`
+    to switch to/focus Full Console log inline, then `z` to zoom full-screen
+    (`zoomed`) and `Escape` to return to the split build view.
 - **Back to the job.**
-  - Run `$J keys RUN b && $J crumb RUN 'Frontend.*mobile-app' && $J wait RUN '│ #[0-9]+ │'`.
+  - From steps focus (`C-h`), run `$J keys RUN b && $J crumb RUN 'Frontend.*mobile-app' && $J wait RUN '│ #[0-9]+ │'`.
 - **Proof.**
   - Run `$J snap RUN job-page` on the job page; retain the earlier
     `build-page` snap from the actual build page.

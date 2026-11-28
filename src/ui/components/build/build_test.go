@@ -27,7 +27,6 @@ import (
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/atm1020/gojenkins"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -284,27 +283,27 @@ func TestPausedPendingInputRendersWaitingForApproval(t *testing.T) {
 
 func TestModelHandleWindowSizeMsgPassesAvailableHeightToStageDetails(t *testing.T) {
 	stageView := viewport.New()
-	stageView.SetHeight(10)
+	stageView.SetHeight(4)
 
 	m := &Model{
 		keyMap:       &KeyMap{},
 		stageDetails: NewStageDetails(80, 50, &KeyMap{}),
+		logPane:      newLogPane(80, 50),
 		stageView:    &stageView,
 	}
 
-	msg := tea.WindowSizeMsg{Width: 80, Height: 50}
-	m.stageView.SetWidth(msg.Width)
-	m.updateStageViewLayout()
-	expectedHeight := msg.Height - lipgloss.Height(lipgloss.JoinHorizontal(
-		lipgloss.Center,
-		m.renderBuildInfo(m.spinnerModel.View()),
-		m.renderArtifacts(),
-	)) - lipgloss.Height(m.stageView.View())
-
+	msg := tea.WindowSizeMsg{Width: 100, Height: 50}
 	m.handleWindowSizeMsg(msg)
 
+	expectedHeight := m.availableBottomHeight()
 	if got := m.stageDetails.wHeight; got != expectedHeight {
 		t.Fatalf("stage details height = %d, want available height %d", got, expectedHeight)
+	}
+	if got := m.logPane.height; got != expectedHeight {
+		t.Fatalf("log pane height = %d, want available height %d", got, expectedHeight)
+	}
+	if m.stageDetails.wWidth+m.logPane.width != msg.Width {
+		t.Fatalf("split widths %d + %d != %d", m.stageDetails.wWidth, m.logPane.width, msg.Width)
 	}
 }
 

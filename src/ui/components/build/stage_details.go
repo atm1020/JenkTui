@@ -2,7 +2,6 @@ package build
 
 import (
 	"fmt"
-	"image/color"
 	"strings"
 
 	"github.com/atm1020/jenktui/src/buildstatus"
@@ -15,8 +14,13 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"charm.land/log/v2"
 	"github.com/atm1020/gojenkins"
+	"github.com/charmbracelet/x/ansi"
+)
+
+const (
+	stepDurationColWidth = 7
+	stepHeaderLines      = 2 // metadata line + divider
 )
 
 type StageDetails struct {
@@ -30,13 +34,15 @@ type StageDetails struct {
 }
 
 func NewStageDetails(wWidth, wHeight int, keymap *KeyMap) *StageDetails {
-	wHeight = getStageViewHeight(wHeight)
 	vp := viewport.New()
+	innerW, innerH := max(1, wWidth-2), max(1, wHeight-2)
+	vp.SetWidth(innerW)
+	vp.SetHeight(innerH)
 
 	t := styles.GetTheme()
 	return &StageDetails{
-		wWidth:              wWidth,
-		wHeight:             wHeight,
+		wWidth:              max(4, wWidth),
+		wHeight:             max(4, wHeight),
 		viewport:            &vp,
 		selectedFlowNodeIdx: 0,
 		isFocused:           false,
@@ -53,8 +59,6 @@ func (s StageDetails) Init() tea.Cmd {
 }
 
 func (s *StageDetails) Update(msg tea.Msg) (util.Model, tea.Cmd) {
-	var cmd tea.Cmd
-
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		return s, s.handleWindowSizeMsg(msg)
@@ -64,9 +68,8 @@ func (s *StageDetails) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		return s, s.handleNodeDownloaded(msg)
 	}
 
-	// Let viewport handle scrolling
-	viewport, cmd := s.viewport.Update(msg)
-	s.viewport = &viewport
+	vp, cmd := s.viewport.Update(msg)
+	s.viewport = &vp
 	return s, cmd
 }
 
@@ -74,50 +77,48 @@ func (s *StageDetails) View() string {
 	return s.render(s.spinnerModel.View())
 }
 
-// render draws the pane straight through lipgloss with spinnerView as the
-// running-step icon. The page's section cache falls back to it and is tested
-// against it.
+// render draws the compact Omaci-inspired framed steps panel straight through
+// lipgloss with spinnerView as the running-step icon. The page's section cache
+// falls back to it and is tested against it.
 func (s *StageDetails) render(spinnerView string) string {
+	opts := s.frameOpts()
 	if s.pipelineNode == nil {
-		return lipgloss.Place(
-			s.wWidth,
-			s.wHeight,
-			lipgloss.Center,
-			lipgloss.Center,
-			"",
-		)
+		iw, ih := s.innerSize()
+		t := styles.GetTheme()
+		empty := t.S().Base.Foreground(t.Grey).Italic(true).Render("No stage selected")
+		return renderPanelFrame(opts, lipgloss.Place(iw, ih, lipgloss.Center, lipgloss.Center, empty))
 	}
 
-	var content string
-	if s.pipelineNode != nil {
-		content = s.renderNodeDetails(spinnerView)
-	}
+	content := s.renderNodeDetails(spinnerView)
+	iw, ih := s.innerSize()
+	s.viewport.SetWidth(iw)
+	s.viewport.SetHeight(ih)
+	s.viewport.Style = lipgloss.NewStyle()
+	y := s.viewport.YOffset()
 	s.viewport.SetContent(content)
+	s.viewport.SetYOffset(y)
+	return renderPanelFrame(opts, s.viewport.View())
+}
 
-	t := styles.GetTheme()
+func (s *StageDetails) innerSize() (w, h int) {
+	return max(1, s.wWidth-2), max(1, s.wHeight-2)
+}
 
-	// Change border color based on focus state
-	borderStyle := t.S().SelectedBorder.
-		BorderTop(false).
-		BorderBottom(true).
-		BorderLeft(false).
-		BorderRight(false).
-		Width(s.wWidth)
-
-	if s.isFocused {
-		// Active view - use focused border color
-		borderStyle = borderStyle.BorderForeground(t.StageFocusedBorder)
+func (s *StageDetails) frameOpts() panelFrameOpts {
+	var note, right string
+	if s.pipelineNode != nil {
+		note = s.pipelineNode.Name
+		right = styles.GetTheme().S().Base.Foreground(styles.GetTheme().SubtleText).
+			Render(fmt.Sprintf("%d", len(s.pipelineNode.StageFlowNodes)))
 	}
-
-	s.viewport.Style = borderStyle
-
-	return lipgloss.Place(
-		s.wWidth,
-		s.wHeight,
-		lipgloss.Left,
-		lipgloss.Top,
-		s.viewport.View(),
-	)
+	return panelFrameOpts{
+		Title:  "steps",
+		Note:   note,
+		Right:  right,
+		Width:  s.wWidth,
+		Height: s.wHeight,
+		Active: s.isFocused,
+	}
 }
 
 // advanceAnimation moves the running-step spinner one frame. The page's
@@ -127,42 +128,80 @@ func (s *StageDetails) advanceAnimation() {
 }
 
 func (s *StageDetails) handleNodeDownloaded(msg NodeDownloadedMsg) tea.Cmd {
-	s.pipelineNode = &msg.PipelineNode
-	if len(s.pipelineNode.StageFlowNodes) == 0 {
+	prevID := ""
+	if s.pipelineNode != nil {
+		prevID = s.pipelineNode.ID
+	}
+	node := msg.PipelineNode
+	s.pipelineNode = &node
+
+	steps := s.pipelineNode.StageFlowNodes
+	switch {
+	case len(steps) == 0:
 		s.selectedFlowNodeIdx = 0
-	} else if s.selectedFlowNodeIdx >= len(s.pipelineNode.StageFlowNodes) {
-		s.selectedFlowNodeIdx = len(s.pipelineNode.StageFlowNodes) - 1
-	} else if s.selectedFlowNodeIdx < 0 {
+		s.viewport.SetYOffset(0)
+	case prevID != node.ID:
+		// First load of a stage: Omaci-style smart focus lands on the first
+		// failed step, else the first active/paused step, else step 0.
+		s.selectedFlowNodeIdx = initialStepFocusIndex(steps)
+		s.ensureSelectedStepVisible()
+	case s.selectedFlowNodeIdx >= len(steps):
+		s.selectedFlowNodeIdx = len(steps) - 1
+		s.ensureSelectedStepVisible()
+	case s.selectedFlowNodeIdx < 0:
 		s.selectedFlowNodeIdx = 0
+		s.ensureSelectedStepVisible()
 	}
 	return nil
 }
 
-func (s *StageDetails) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
-	if s.pipelineNode == nil {
-		return nil
+func initialStepFocusIndex(steps []gojenkins.PipelineNode) int {
+	for i, step := range steps {
+		if buildstatus.PipelineStatus(step.Status).Outcome() == buildstatus.OutcomeFailure {
+			return i
+		}
 	}
+	for i, step := range steps {
+		status := buildstatus.PipelineStatus(step.Status)
+		if status.IsExecuting() || status.Activity(0) == buildstatus.ActivityPaused {
+			return i
+		}
+	}
+	return 0
+}
 
-	if len(s.pipelineNode.StageFlowNodes) == 0 {
+func (s *StageDetails) selectedStep() (gojenkins.PipelineNode, bool) {
+	if s.pipelineNode == nil || len(s.pipelineNode.StageFlowNodes) == 0 {
+		return gojenkins.PipelineNode{}, false
+	}
+	idx := clampInt(s.selectedFlowNodeIdx, 0, len(s.pipelineNode.StageFlowNodes)-1)
+	return s.pipelineNode.StageFlowNodes[idx], true
+}
+
+func (s *StageDetails) stageName() string {
+	if s.pipelineNode == nil {
+		return ""
+	}
+	return s.pipelineNode.Name
+}
+
+func (s *StageDetails) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
+	if s.pipelineNode == nil || len(s.pipelineNode.StageFlowNodes) == 0 {
 		return nil
 	}
 
 	switch {
 	case key.Matches(msg, s.keymap.Down):
-		// Move to next flow node
-		s.selectedFlowNodeIdx++
-		if s.selectedFlowNodeIdx >= len(s.pipelineNode.StageFlowNodes) {
-			s.selectedFlowNodeIdx = len(s.pipelineNode.StageFlowNodes) - 1
+		if s.selectedFlowNodeIdx < len(s.pipelineNode.StageFlowNodes)-1 {
+			s.selectedFlowNodeIdx++
 		}
-		s.viewport.ScrollDown(4)
+		s.ensureSelectedStepVisible()
 		return nil
 	case key.Matches(msg, s.keymap.Up):
-		// Move to previous flow node
-		s.selectedFlowNodeIdx--
-		if s.selectedFlowNodeIdx < 0 {
-			s.selectedFlowNodeIdx = 0
+		if s.selectedFlowNodeIdx > 0 {
+			s.selectedFlowNodeIdx--
 		}
-		s.viewport.ScrollUp(4)
+		s.ensureSelectedStepVisible()
 		return nil
 	case key.Matches(msg, s.keymap.OpenStepLog):
 		selected := s.pipelineNode.StageFlowNodes[s.selectedFlowNodeIdx]
@@ -174,198 +213,181 @@ func (s *StageDetails) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
+func (s *StageDetails) ensureSelectedStepVisible() {
+	if s.viewport == nil || s.pipelineNode == nil || len(s.pipelineNode.StageFlowNodes) == 0 {
+		return
+	}
+	_, innerH := s.innerSize()
+	if innerH <= 0 {
+		return
+	}
+	line := stepHeaderLines + s.selectedFlowNodeIdx
+	y := s.viewport.YOffset()
+	if line < y {
+		if s.selectedFlowNodeIdx == 0 {
+			s.viewport.SetYOffset(0)
+		} else {
+			s.viewport.SetYOffset(max(0, line))
+		}
+	} else if line >= y+innerH {
+		s.viewport.SetYOffset(line - innerH + 1)
+	}
+}
+
 func (s StageDetails) renderNodeDetailsHeader() string {
 	node := s.pipelineNode
 	t := styles.GetTheme()
+	innerW, _ := s.innerSize()
 
-	var sections []string
+	status := buildstatus.PipelineStatus(node.Status)
+	nodeLabel := (NodeUsage{Name: node.ExecNode}).DisplayName()
+	meta := fmt.Sprintf(" Stage ID: %s · Node: %s", node.ID, nodeLabel)
+	metaLine := t.S().Base.Foreground(t.SubtleText).Render(ansi.Truncate(meta, innerW, "…"))
 
-	// Header with node name and status icon
-	status := buildstatus.PipelineStatus(s.pipelineNode.Status)
-	statusIcon := s.getStatusIcon(status)
-	sections = append(sections,
-		t.S().Title.Render(fmt.Sprintf("%s %s", node.Name, statusIcon)))
-
-	// Basic Info
-	sections = append(sections,
-		t.S().Base.Bold(true).Render("Stage ID: ")+s.pipelineNode.ID)
-	statusText := status.Label()
+	var secondLine string
 	if status.Activity(0) == buildstatus.ActivityPaused {
-		statusText = t.S().Base.Foreground(t.Warning).Render(statusText)
+		approval := t.S().Base.Foreground(t.Warning).Render("Waiting for approval")
+		secondLine = " " + approval
+	} else {
+		secondLine = t.S().Base.Foreground(t.FaintBorder).Render(strings.Repeat("─", innerW))
 	}
-	sections = append(sections,
-		t.S().Base.Bold(true).Render("Status: ")+statusText)
-	sections = append(sections,
-		t.S().Base.Bold(true).Render("Started: ")+util.FormatStartTime(s.pipelineNode.StartTime))
-	sections = append(sections,
-		t.S().Base.Bold(true).Render("Duration: ")+util.FormatDuration(s.pipelineNode.Duration))
-	nodeWidth := max(0, s.wWidth-lipgloss.Width("Node: "))
-	sections = append(sections,
-		t.S().Base.Bold(true).Render("Node: ")+middleTruncate((NodeUsage{Name: s.pipelineNode.ExecNode}).DisplayName(), nodeWidth))
 
-	// Parent Nodes
-	if len(node.ParentNodes) > 0 {
-		sections = append(sections,
-			t.S().Base.Bold(true).Render("Parent Nodes:"))
-		for _, parentID := range node.ParentNodes {
-			sections = append(sections,
-				t.S().Base.Render(fmt.Sprintf("  • %s", parentID)))
-		}
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+	return metaLine + "\n" + secondLine
 }
 
 func (s StageDetails) renderNodeDetails(spinnerView string) string {
 	header := s.renderNodeDetailsHeader()
 	t := styles.GetTheme()
-	var content string
-	// Stage Flow Nodes
-	if len(s.pipelineNode.StageFlowNodes) > 0 {
-		var builder strings.Builder
-		for i, flowNode := range s.pipelineNode.StageFlowNodes {
-			isSelected := i == s.selectedFlowNodeIdx
-			flowNodeContent := s.renderFlowNode(i+1, flowNode, isSelected, spinnerView)
-			builder.WriteString(flowNodeContent)
-			builder.WriteString("\n")
-		}
-		content = builder.String()
-	} else {
-		content = lipgloss.Place(
-			s.wWidth,
-			s.wHeight-lipgloss.Height(header),
+	innerW, innerH := s.innerSize()
+
+	if len(s.pipelineNode.StageFlowNodes) == 0 {
+		missing := lipgloss.Place(
+			innerW,
+			max(1, innerH-stepHeaderLines),
 			lipgloss.Center,
 			lipgloss.Center,
 			t.S().Base.Foreground(t.Grey).Italic(true).Render("Pipeline Steps not available"),
 		)
+		return header + "\n" + missing
 	}
 
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		header,
-		content,
-	)
+	lines := make([]string, 0, len(s.pipelineNode.StageFlowNodes)+1)
+	lines = append(lines, header)
+	for i, flowNode := range s.pipelineNode.StageFlowNodes {
+		lines = append(lines, s.renderFlowNode(i+1, flowNode, i == s.selectedFlowNodeIdx, spinnerView))
+	}
+	return strings.Join(lines, "\n")
 }
 
-func (s StageDetails) renderFlowNode(index int, flowNode gojenkins.PipelineNode, isSelected bool, spinnerView string) string {
+// renderFlowNode draws one compact Omaci-style single-line step row:
+// `▸ <icon> <step name>          <duration>` with exact innerW cell width.
+func (s StageDetails) renderFlowNode(_ int, flowNode gojenkins.PipelineNode, isSelected bool, spinnerView string) string {
 	t := styles.GetTheme()
+	innerW, _ := s.innerSize()
 
-	// Create a box style for each flow node
-	flowNodeStyle := t.S().Base.
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Grey).
-		PaddingLeft(1).
-		PaddingRight(1).
-		Width(s.wWidth - 8)
+	rowBase := t.S().Base
+	if isSelected {
+		rowBase = rowBase.Background(t.SelectedBackground)
+	}
+
+	pointer := rowBase.Render("  ")
+	if isSelected {
+		pointer = rowBase.Foreground(t.StageFocusedBorder).Bold(true).Render("▸ ")
+	}
 
 	status := buildstatus.PipelineStatus(flowNode.Status)
 	isInProgress := status.IsExecuting()
-	isWaitingForApproval := status.Activity(0) == buildstatus.ActivityPaused
+	isPaused := status.Activity(0) == buildstatus.ActivityPaused
 
-	var flowIcon string
-	if isInProgress {
-		flowIcon = spinnerView
-		flowNodeStyle = flowNodeStyle.BorderForeground(t.Warning)
-	} else {
-		flowIcon = s.getStatusIcon(status)
-		if isWaitingForApproval {
-			flowNodeStyle = flowNodeStyle.BorderForeground(t.Warning)
-		}
-	}
-
-	// Live elapsed time for in-progress steps; static duration otherwise
-	// var durationStr string
-	// if isInProgress && flowNode.StartTime > 0 {
-	// 	elapsed := time.Now().UnixMilli() - flowNode.StartTime
-	// 	durationStr = util.FormatDuration(elapsed)
-	// } else {
-	durationStr := util.FormatDuration(flowNode.Duration)
-	// }
-
-	// Get status color based on semantic state.
-	var statusColor color.Color
+	var icon string
 	switch {
-	case status.Outcome() == buildstatus.OutcomeSuccess:
-		statusColor = t.Success
-	case status.Outcome() == buildstatus.OutcomeFailure:
-		statusColor = t.Error
-		flowNodeStyle = flowNodeStyle.BorderForeground(t.Error)
-	case status.IsActive(0):
-		statusColor = t.Warning
+	case isInProgress:
+		icon = rowBase.Foreground(t.Warning).Render(spinnerView)
+	case isPaused:
+		icon = rowBase.Foreground(t.Warning).Render(styles.WaitingIcon)
 	default:
-		statusColor = t.Grey
+		icon = s.stepStatusIcon(status, isSelected)
 	}
 
-	// Header: index, name, icon, duration
-	nameStyle := t.S().Base.Bold(true)
-	if isSelected {
-		nameStyle = nameStyle.Foreground(t.Primary)
+	var rightText string
+	var rightStyled string
+	if isPaused {
+		rightText = "Waiting for approval"
+		rightStyled = rowBase.Foreground(t.Warning).Render(rightText)
+	} else {
+		if status.Outcome() == buildstatus.OutcomeNotBuilt {
+			rightText = "-"
+		} else {
+			rightText = util.FormatDuration(flowNode.Duration)
+		}
+		durStyle := rowBase.Foreground(t.SubtleText)
+		if isSelected {
+			durStyle = rowBase.Foreground(t.FgBase).Bold(true)
+		}
+		rightStyled = durStyle.Render(rightText)
 	}
 
-	header := nameStyle.Render(fmt.Sprintf("%d. %s", index, flowNode.Name)) +
-		" " + flowIcon +
-		" " + t.S().Base.Foreground(statusColor).Render(status.Label()) +
-		" " + t.S().Base.Foreground(t.Grey).Render(fmt.Sprintf("(%s)", durationStr))
-
-	// Details section
-	var details []string
-	details = append(details, header)
-	details = append(details,
-		t.S().Base.Foreground(t.Grey).Render(fmt.Sprintf("ID: %s", flowNode.ID)))
-
-	// Display log status hint below the box if selected
-	content := lipgloss.JoinVertical(lipgloss.Left, details...)
-
-	// Highlight selected node (override the in-progress or failed color)
-	if isSelected {
-		flowNodeStyle = flowNodeStyle.BorderForeground(t.Primary)
+	iconW := ansi.StringWidth(icon)
+	rightW := ansi.StringWidth(rightText)
+	// Layout: pointer(2) + icon + " "(1) + name + gap(>=1) + right + " "(1)
+	availNameW := innerW - 2 - iconW - 1 - 1 - rightW - 1
+	if availNameW < 4 {
+		// Drop right-aligned duration when ultra-narrow so the step name remains legible.
+		rightStyled = ""
+		rightW = 0
+		availNameW = max(1, innerW-2-iconW-1-1)
 	}
-	renderedBox := flowNodeStyle.Render(content)
 
-	return renderedBox
+	name := ansi.Truncate(flowNode.Name, availNameW, "…")
+	nameStyle := rowBase
+	switch {
+	case isSelected:
+		nameStyle = nameStyle.Foreground(t.FgBase).Bold(true)
+	case status.Outcome() == buildstatus.OutcomeFailure:
+		nameStyle = nameStyle.Foreground(t.Error)
+	case status.Outcome() == buildstatus.OutcomeNotBuilt:
+		nameStyle = nameStyle.Foreground(t.SubtleText)
+	}
+
+	used := 2 + iconW + 1 + ansi.StringWidth(name) + rightW
+	if rightW > 0 {
+		used++ // trailing space
+	}
+	gap := max(0, innerW-used)
+
+	var b strings.Builder
+	b.WriteString(pointer)
+	b.WriteString(icon)
+	b.WriteString(rowBase.Render(" "))
+	b.WriteString(nameStyle.Render(name))
+	if gap > 0 {
+		b.WriteString(rowBase.Render(strings.Repeat(" ", gap)))
+	}
+	if rightW > 0 {
+		b.WriteString(rightStyled)
+		b.WriteString(rowBase.Render(" "))
+	}
+	return b.String()
 }
 
-func (s StageDetails) getStatusIcon(status buildstatus.PipelineStatus) string {
+func (s StageDetails) stepStatusIcon(status buildstatus.PipelineStatus, isSelected bool) string {
 	t := styles.GetTheme()
-
+	base := t.S().Base
+	if isSelected {
+		base = base.Background(t.SelectedBackground)
+	}
 	if status.IsActive(0) {
-		return t.S().StyledIcons.Running
+		return base.Foreground(t.Warning).Render(styles.WaitingIcon)
 	}
 	switch status.Outcome() {
 	case buildstatus.OutcomeSuccess:
-		return t.S().StyledIcons.Success
+		return base.Foreground(t.Success).Render(styles.SuccessIcon)
 	case buildstatus.OutcomeFailure:
-		return t.S().StyledIcons.Failure
+		return base.Foreground(t.Error).Render(styles.FailureIcon)
 	case buildstatus.OutcomeAborted:
-		return t.S().StyledIcons.Pending
+		return base.Foreground(t.Grey).Render(styles.NotBuildedIcon)
 	default:
-		return t.S().StyledIcons.NotBuilt
-	}
-}
-
-func getStageViewHeight(height int) int {
-	return int(float64(height) * 0.6)
-}
-
-// autoSelectInProgressFlowNode finds the first in-progress flow node,
-// selects it, and scrolls the viewport to make it visible.
-func (s *StageDetails) autoSelectInProgressFlowNode() {
-	if s.pipelineNode == nil {
-		return
-	}
-	for i, flowNode := range s.pipelineNode.StageFlowNodes {
-		status := buildstatus.PipelineStatus(flowNode.Status)
-		if status.IsExecuting() || status.Activity(0) == buildstatus.ActivityPaused {
-			log.Error("Selected Status", "status", status)
-			s.selectedFlowNodeIdx = i
-			// renderNodeDetailsHeader renders 6 fixed lines (title, ID, status, started, duration, node).
-			// Each flow node box renders as 4 lines (2 border + 2 content) plus 1 newline separator.
-			const headerHeight = 6
-			const nodeHeight = 5
-			// s.viewport.EnsureVisible(headerHeight+i*nodeHeight, 1, 1)
-			// s.viewport.ScrollDown(i * 4)
-			s.viewport.PageDown()
-			return
-		}
+		return base.Foreground(t.Grey).Render(styles.NotBuildedIcon)
 	}
 }
 
@@ -375,9 +397,11 @@ func (s *StageDetails) init() {
 }
 
 func (s *StageDetails) handleWindowSizeMsg(msg tea.WindowSizeMsg) tea.Cmd {
-	s.wWidth = msg.Width
-	s.wHeight = msg.Height // getStageViewHeight(msg.Height)
-	s.viewport.SetWidth(s.wWidth)
-	s.viewport.SetHeight(s.wHeight)
+	s.wWidth = max(4, msg.Width)
+	s.wHeight = max(4, msg.Height)
+	iw, ih := s.innerSize()
+	s.viewport.SetWidth(iw)
+	s.viewport.SetHeight(ih)
+	s.ensureSelectedStepVisible()
 	return nil
 }

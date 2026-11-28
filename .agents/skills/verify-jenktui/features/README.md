@@ -29,6 +29,11 @@ with `J=dist/bin/jt` (build it once per session with
   sit between the parts.
 - Seed job paths used throughout:
   - `DevTeam/Frontend/mobile-app`: pipeline, about 26s per build, 9 stages
+  - `DevTeam/Frontend/webapp-build`: Declarative parallel pipeline (`Install` →
+    `Parallel Tests { Unit, Integration, Lint }` → `Bundle`)
+  - `DevTeam/Frontend/webapp-parallel-long`: longer-running staggered Declarative
+    parallel pipeline (`Lint 10s`, `Unit 18s`, `Integration 26s`) for verifying
+    live parallel grouping and elapsed durations while running
   - `DevTeam/Backend/log-heavy-job`: 1,500+ log lines, including 500 lines of
     `Processing batch`
   - `DevTeam/Backend`: currently five seeded children; check the actual
@@ -75,10 +80,11 @@ sub-feature or optional external effect below.
 | Command palette, notification-style popup, chooser styling, shortcuts, and action dispatch | [command-palette.md](./command-palette.md) |
 | Global search dialog | [search-and-browse.md](./search-and-browse.md) |
 | Folder listing | [search-and-browse.md](./search-and-browse.md) |
-| Job page + shared poll startup / failure / replay / unsupported-kind states | [job-and-build.md](./job-and-build.md) |
-| Build page + step log (`ctrl+l`) | [job-and-build.md](./job-and-build.md) |
-| Console log viewer | [log-viewer.md](./log-viewer.md) |
+| Job page + Parallel Group Cards + shared poll startup / failure / replay / unsupported-kind states | [job-and-build.md](./job-and-build.md) |
+| Unified Build & inline Log page (Omaci-style framed `build`/`stages`/`steps`/`log`, 4 log scopes, zoom) | [job-and-build.md](./job-and-build.md) |
+| Integrated console log viewer (zoomed full log, chunked scroll, search, 4 scopes) | [log-viewer.md](./log-viewer.md) |
 | Trigger loading feedback + confirm + My Runs | [trigger-and-my-runs.md](./trigger-and-my-runs.md) |
+| Completion footer expiry and delivery-retry deduplication | [completion-footer.md](./completion-footer.md) |
 | Favorites scope, navigation hints, result focus, and saved items | [favorites.md](./favorites.md) |
 | Build form, artifacts/open-folder confirmation, replay, cancellation | [build-actions.md](./build-actions.md) |
 | Server picker, add/edit setup, private-CA test/save | [server-selector.md](./server-selector.md) |

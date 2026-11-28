@@ -17,6 +17,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"charm.land/log/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type ActiveView int
@@ -56,6 +57,12 @@ type Model struct {
 	// Search state
 	searchState *SearchState
 
+	// Embedded mode omits the standalone outer search box and viewport border so
+	// a parent framed panel (e.g. Build page's inline log pane) owns the frame.
+	embedded   bool
+	scopeKey   string // "full", "stage", "step", or "outside"
+	zoomedHint bool
+
 	// Context
 	ctx *context.ProgramContext
 }
@@ -67,7 +74,7 @@ func NewModel(ctx *context.ProgramContext, width, height int, logFilePath string
 	ti.SetWidth(width)
 
 	headerSize := 3
-	viewportHeight := height - headerSize
+	viewportHeight := max(1, height-headerSize)
 
 	return &Model{
 		ctx:              ctx,
@@ -82,6 +89,88 @@ func NewModel(ctx *context.ProgramContext, width, height int, logFilePath string
 		spinner:          newSpinner(),
 		loader:           NewLoader(logFilePath),
 	}
+}
+
+// NewEmbeddedModel creates a borderless compact logviewer meant to live inside
+// a parent panel frame (such as the Build page's inline log pane).
+func NewEmbeddedModel(ctx *context.ProgramContext, width, height int, logFilePath string) *Model {
+	m := NewModel(ctx, max(1, width), max(1, height), logFilePath)
+	m.embedded = true
+	m.Resize(width, height)
+	return m
+}
+
+// Resize updates the viewer and its viewport dimensions cleanly.
+func (m *Model) Resize(width, height int) {
+	m.width = max(1, width)
+	m.height = max(1, height)
+	vpHeight := m.height
+	if m.embedded {
+		vpHeight = max(1, m.height-1)
+	}
+	_ = m.bufferedViewport.Update(tea.WindowSizeMsg{Width: m.width, Height: vpHeight})
+}
+
+// SetEmbeddedToolbar configures context hints shown in the compact embedded bar.
+// activeScope is one of "full", "stage", "step", or "outside".
+func (m *Model) SetEmbeddedToolbar(activeScope string, zoomed bool) {
+	m.scopeKey = activeScope
+	m.zoomedHint = zoomed
+}
+
+func (m *Model) FilePath() string   { return m.filePath }
+func (m *Model) TotalLines() int    { return m.bufferedViewport.TotalLines() }
+func (m *Model) CursorLine() int    { return m.bufferedViewport.CursorLine() + 1 }
+func (m *Model) IsLoading() bool    { return m.loading }
+func (m *Model) InSearchView() bool { return m.activeView == SearchView }
+func (m *Model) InVisualMode() bool { return m.bufferedViewport.VisualMode() }
+func (m *Model) WrapEnabled() bool  { return m.bufferedViewport.WrapEnabled() }
+
+// JumpToLine moves the cursor to a 1-based line in the loaded log and scrolls
+// so the target sits near the top of the viewport (with a couple lines of
+// context above when available, Omaci-style). Reloads the buffer window if the
+// line falls outside the currently buffered chunk.
+func (m *Model) JumpToLine(line int) tea.Cmd {
+	total := m.bufferedViewport.TotalLines()
+	if total == 0 {
+		return nil
+	}
+	target := max(1, min(line, total))
+	from, to := m.bufferedViewport.GetRange()
+	if target-1 >= from && target-1 < to {
+		m.bufferedViewport.SetCursorLine(target - 1)
+		yOff := max(0, (target-1)-from-2)
+		m.bufferedViewport.SetYOffset(yOff)
+		m.bufferedViewport.updateCursorHighlight()
+		return nil
+	}
+	return m.handleSetCursor(SetCursorMsg{Line: target, Col: 0})
+}
+
+func (m *Model) ToggleWrap() {
+	m.bufferedViewport.ToggleWrap()
+}
+
+// FocusSearch enters search mode and focuses the search text input.
+func (m *Model) FocusSearch() tea.Cmd {
+	m.activeView = SearchView
+	m.searchInput.Reset()
+	return m.searchInput.Focus()
+}
+
+// ExitSearch leaves search mode without clearing the current query results.
+func (m *Model) ExitSearch() {
+	m.searchInput.Blur()
+	m.activeView = LogView
+}
+
+// LineCountLabel formats the line total for a framed panel's top-right corner.
+func (m *Model) LineCountLabel() string {
+	total := m.bufferedViewport.TotalLines()
+	if total == 1 {
+		return "1 line"
+	}
+	return fmt.Sprintf("%d lines", total)
 }
 
 func newSpinner() spinner.Model {
@@ -244,6 +333,10 @@ func (m *Model) handleCursorBlink(msg cursor.BlinkMsg) tea.Cmd {
 
 // View renders the model
 func (m Model) View() string {
+	if m.embedded {
+		return m.renderEmbeddedView()
+	}
+
 	t := styles.GetTheme()
 
 	// Border styles based on active view
@@ -301,6 +394,99 @@ func (m Model) View() string {
 	)
 }
 
+func (m Model) renderEmbeddedView() string {
+	t := styles.GetTheme()
+	width := max(1, m.width)
+
+	tier := styles.WidthTierFor(width)
+	statsText := strings.TrimSpace(m.renderStats(tier))
+	statsRendered := t.S().Base.Foreground(t.SubtleText).Render(statsText)
+	statsW := ansi.StringWidth(statsRendered)
+
+	var left string
+	availLeft := max(0, width-statsW-2)
+	switch {
+	case m.activeView == SearchView:
+		prefix := t.S().Base.Foreground(t.Primary).Bold(true).Render("/") + " "
+		inputW := max(6, availLeft-ansi.StringWidth(prefix))
+		m.searchInput.SetWidth(inputW)
+		left = prefix + ansi.Truncate(m.searchInput.View(), max(0, availLeft-ansi.StringWidth(prefix)), "")
+	case m.bufferedViewport.VisualMode():
+		badge := t.S().Base.Background(t.Warning).Foreground(t.HighlightForeground).Bold(true).Render(" VISUAL ")
+		hints := m.renderHint("[y]", "yank", false, t) + "  " + m.renderHint("[esc]", "exit", false, t)
+		left = ansi.Truncate(badge+" "+hints, availLeft, "")
+	default:
+		left = m.renderEmbeddedHints(availLeft, t)
+	}
+
+	leftW := ansi.StringWidth(left)
+	gap := max(1, width-leftW-statsW)
+	if leftW+1+statsW > width {
+		left = ansi.Truncate(left, max(0, width-statsW-1), "")
+		gap = max(0, width-ansi.StringWidth(left)-statsW)
+	}
+	header := left + strings.Repeat(" ", gap) + statsRendered
+	header = ansi.Truncate(header, width, "")
+
+	m.bufferedViewport.SetStyle(lipgloss.NewStyle())
+	body := m.bufferedViewport.View()
+
+	return header + "\n" + body
+}
+
+func (m Model) renderEmbeddedHints(maxWidth int, t *styles.Theme) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	wrapMark := "□"
+	if m.bufferedViewport.WrapEnabled() {
+		wrapMark = "■"
+	}
+	zoomLabel := "tall"
+	if m.zoomedHint {
+		zoomLabel = "split"
+	}
+
+	candidates := []string{
+		m.renderHint("[1]", "full", m.scopeKey == "full", t),
+		m.renderHint("[2]", "stage", m.scopeKey == "stage", t),
+		m.renderHint("[3]", "step", m.scopeKey == "step", t),
+		m.renderHint("[4]", "outside", m.scopeKey == "outside", t),
+		m.renderHint("[/]", "search", false, t),
+		m.renderHint("[w]", wrapMark+" wrap", m.bufferedViewport.WrapEnabled(), t),
+		m.renderHint("[z]", zoomLabel, m.zoomedHint, t),
+	}
+
+	var b strings.Builder
+	used := 0
+	for _, item := range candidates {
+		w := ansi.StringWidth(item)
+		sep := 0
+		if used > 0 {
+			sep = 2
+		}
+		if used+sep+w > maxWidth {
+			break
+		}
+		if sep > 0 {
+			b.WriteString("  ")
+		}
+		b.WriteString(item)
+		used += sep + w
+	}
+	return b.String()
+}
+
+func (m Model) renderHint(keyLabel, desc string, active bool, t *styles.Theme) string {
+	keyStyle := t.S().Base.Foreground(t.Primary).Bold(true)
+	descStyle := t.S().Base.Foreground(t.SubtleText)
+	if active {
+		keyStyle = t.S().Base.Background(t.SelectedBackground).Foreground(t.Primary).Bold(true)
+		descStyle = t.S().Base.Background(t.SelectedBackground).Foreground(t.FgBase)
+	}
+	return keyStyle.Render(keyLabel) + descStyle.Render(" "+desc)
+}
+
 func (m Model) KeyMap() help.KeyMap {
 	return m.keymap
 }
@@ -308,6 +494,12 @@ func (m Model) KeyMap() help.KeyMap {
 func (m *Model) handleWindowSizeMsg(msg tea.WindowSizeMsg) tea.Cmd {
 	m.width = msg.Width
 	m.height = msg.Height
+	if m.embedded {
+		return m.bufferedViewport.Update(tea.WindowSizeMsg{
+			Width:  max(1, msg.Width),
+			Height: max(1, msg.Height-1),
+		})
+	}
 	return m.bufferedViewport.Update(msg)
 }
 
@@ -494,6 +686,10 @@ func (m *Model) IsCapturingInput() bool {
 
 // handleSearchViewKeys handles keys in search view
 func (m *Model) handleSearchViewKeys(msg tea.KeyMsg) tea.Cmd {
+	if key.Matches(msg, m.keymap.ExitVisualMode) {
+		m.ExitSearch()
+		return nil
+	}
 	if key.Matches(msg, m.keymap.Enter) {
 		m.loading = true
 		return tea.Batch(m.searchFile(m.searchInput.Value()), m.startSpinner())

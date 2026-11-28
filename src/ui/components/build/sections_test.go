@@ -15,16 +15,29 @@ import (
 // directView is the page drawn straight through lipgloss, with no section
 // cache. Every cached view must match it byte for byte.
 func directView(m *Model) string {
-	var details string
-	if m.stageDetails != nil {
-		details = m.stageDetails.render(m.stageDetails.spinnerModel.View())
+	header := m.spinnerModel.View()
+	if m.logPane != nil && m.logPane.zoomed {
+		return lipgloss.Place(m.wWidth, m.wHeight, lipgloss.Left, lipgloss.Top, m.renderLogPanel(header))
 	}
-	m.updateStageViewLayout()
-	return lipgloss.Place(m.wWidth, m.wHeight, lipgloss.Center, lipgloss.Top,
+	stepsW, logW := m.bottomPaneWidths()
+	var bottom string
+	switch {
+	case stepsW > 0 && logW > 0:
+		var steps string
+		if m.stageDetails != nil {
+			steps = m.stageDetails.render(m.stageDetails.spinnerModel.View())
+		}
+		bottom = lipgloss.JoinHorizontal(lipgloss.Top, steps, m.renderLogPanel(header))
+	case logW > 0:
+		bottom = m.renderLogPanel(header)
+	case stepsW > 0 && m.stageDetails != nil:
+		bottom = m.stageDetails.render(m.stageDetails.spinnerModel.View())
+	}
+	return lipgloss.Place(m.wWidth, m.wHeight, lipgloss.Left, lipgloss.Top,
 		lipgloss.JoinVertical(lipgloss.Left,
-			lipgloss.JoinHorizontal(lipgloss.Center, m.renderBuildInfo(m.spinnerModel.View()), m.renderArtifacts()),
-			m.stageView.View(),
-			details,
+			m.renderBuildInfo(header),
+			m.renderStagesPanel(),
+			bottom,
 		),
 	)
 }
@@ -57,11 +70,15 @@ func TestSectionsMatchDirectRenderForEveryFrame(t *testing.T) {
 func TestFrameRerendersOnlyAnimatedSections(t *testing.T) {
 	page, _ := newAnimationPage()
 	t.Cleanup(func() { _ = page.CleanUp() })
+	// Mark inline log idle (as when already loaded or empty) to verify static log
+	// sections do not re-render on build animation frames.
+	page.logPane.loading = false
+	page.sections.invalidate()
 	_ = page.View()
 	c := &page.sections
 	before := map[string]int{
-		"artifacts": c.artifacts.Renders(), "flow": c.flow.Renders(), "header": c.details.header.Renders(),
-		"info": c.info.Renders(),
+		"flow": c.flow.Renders(), "header": c.details.header.Renders(),
+		"info": c.info.Renders(), "log": c.log.Renders(),
 	}
 	steps := make([]int, len(c.details.steps))
 	for i := range c.details.steps {
@@ -76,8 +93,9 @@ func TestFrameRerendersOnlyAnimatedSections(t *testing.T) {
 	if !c.details.chromeOK || c.details.syncedLines == 0 {
 		t.Fatal("stage details fell back to the lipgloss render")
 	}
-	if c.artifacts.Renders() != before["artifacts"] || c.details.header.Renders() != before["header"] {
-		t.Fatal("an animation frame re-rendered a static section")
+	if c.details.header.Renders() != before["header"] || c.log.Renders() != before["log"] {
+		t.Fatalf("an animation frame re-rendered a static section: header=%d->%d log=%d->%d",
+			before["header"], c.details.header.Renders(), before["log"], c.log.Renders())
 	}
 	if !page.hasRunningStage() {
 		t.Fatal("animation page has no running stage")
@@ -138,10 +156,22 @@ func TestSectionsRefreshOnPageChanges(t *testing.T) {
 func TestSectionsScrollWithTheStepList(t *testing.T) {
 	page, _ := newAnimationPage()
 	t.Cleanup(func() { _ = page.CleanUp() })
-	_, _ = page.Update(tea.WindowSizeMsg{Width: 160, Height: 30})
+	// Add enough steps to exceed the compact steps pane height and force scrolling.
+	for i := 5; i < 16; i++ {
+		page.stageDetails.pipelineNode.StageFlowNodes = append(page.stageDetails.pipelineNode.StageFlowNodes,
+			page.stageDetails.pipelineNode.StageFlowNodes[0])
+		page.stageDetails.pipelineNode.StageFlowNodes[i].ID = fmt.Sprint(100 + i)
+		page.stageDetails.pipelineNode.StageFlowNodes[i].Name = fmt.Sprintf("sh: make step-%d", i+1)
+	}
+	page.stageDetails.selectedFlowNodeIdx = 0
+	page.stageDetails.viewport.SetYOffset(0)
+	_, _ = page.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
 	_ = page.View()
-	for i := range 4 {
+	for i := range 10 {
 		_, _ = page.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+		page.logPane.cancelInFlight()
+		page.logPane.loading = false
+		page.sections.invalidate()
 		assertViewMatchesDirect(t, page, fmt.Sprint("after step move ", i))
 		_, _ = page.Update(page.clock.Frame())
 		assertViewMatchesDirect(t, page, fmt.Sprint("frame after step move ", i))
@@ -172,12 +202,15 @@ func TestRunningStageBoxShowsMovingPulse(t *testing.T) {
 	page, _ := newAnimationPage()
 	t.Cleanup(func() { _ = page.CleanUp() })
 
-	first := page.pulseBar.View()
-	if !strings.Contains(page.renderStages(), first) {
-		t.Fatal("running stage box does not show the pulse bar")
+	firstPulse := runningBarPattern(page.pulseBar.Width(), []rune(page.pulseBar.View()))
+	firstStage := page.renderStages()
+	if !strings.Contains(firstStage, firstPulse) {
+		t.Fatal("running stage bar does not show the separated pulse pattern")
 	}
 	_, _ = page.Update(page.clock.Frame())
-	if next := page.pulseBar.View(); next == first || !strings.Contains(page.renderStages(), next) {
+	nextPulse := runningBarPattern(page.pulseBar.Width(), []rune(page.pulseBar.View()))
+	nextStage := page.renderStages()
+	if nextPulse == firstPulse || !strings.Contains(nextStage, nextPulse) {
 		t.Fatal("animation frame did not advance the stage pulse")
 	}
 }
