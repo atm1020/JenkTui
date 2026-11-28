@@ -172,8 +172,10 @@ active dialogs and text-input modes can intercept global keys):
   `ctrl+s` server, `ctrl+t` theme, `?` help, `ctrl+c` quit
 - **Job:** `enter` build, `L` log, `ctrl+b` trigger, `r` replay, `x` cancel,
   `F` favorite, `B`/`S` builds/stages pane
-- **Build:** `h`/`l` stage, `ctrl+l` step log, `L` full log, `p` params,
-  `d`/`D` artifacts, `ctrl+j` job
+- **Build:** `h`/`l` stage, `j`/`k` step, `tab`/`shift+tab` switch steps↔log
+  pane, `ctrl+h` steps, `ctrl+l` focus step log, `L` toggle full/step log,
+  `1`/`2`/`3`/`4` log scope (full/stage/step/outside), `z` zoom log (`esc`
+  unzoom), `/` search log, `w` wrap, `p` params, `d`/`D` artifacts, `ctrl+j` job
 
 The home view has **no job list**. The way into jobs and folders is global
 search (`C-p`) or Favorites/My Runs.

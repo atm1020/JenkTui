@@ -73,10 +73,18 @@ func newAnimationPage() (*Model, tea.Cmd) {
 	page := NewModel(&context.ProgramContext{Config: config.GetDefaultConfig(), Jenkins: jenkins}, run, animationWidth, animationHeight)
 	// The router's Init would also fetch; the fixture delivers the fetch result.
 	page.entered = true
-	_, cmd := page.Update(BuildFetchedMsg{
+	_, _ = page.Update(BuildFetchedMsg{
 		model: page, Generation: page.fetchGeneration, PipelineRun: run, Node: &node, Build: build,
 		StartedBy: "Profile User", StartedByDetails: "Started by user Profile User",
 	})
+	// The offline fixture uses jenkins.invalid and must not perform network I/O;
+	// settle the inline log pane and restart the single frame clock cleanly.
+	page.logPane.cancelFullInFlight()
+	page.logPane.cancelInFlight()
+	page.logPane.loading = false
+	page.logPane.empty = true
+	page.clock.Stop()
+	cmd := page.ensureAnimation()
 	_, _ = page.Update(tea.WindowSizeMsg{Width: animationWidth, Height: animationHeight})
 	return page, cmd
 }

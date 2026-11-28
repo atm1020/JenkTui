@@ -128,8 +128,26 @@ func TestBuildLoadResolvesOnlyMissingData(t *testing.T) {
 			mu.Lock()
 			gotRequests := append([]string(nil), requests...)
 			mu.Unlock()
-			if !reflect.DeepEqual(gotRequests, wantRequests) {
-				t.Fatalf("requests = %v, want %v", gotRequests, wantRequests)
+			var gotCore, gotGraph []string
+			for _, p := range gotRequests {
+				if strings.HasSuffix(p, "/pipeline-overview/tree") || strings.HasSuffix(p, "/pipeline-graph/tree") {
+					gotGraph = append(gotGraph, p)
+				} else {
+					gotCore = append(gotCore, p)
+				}
+			}
+			if !reflect.DeepEqual(gotCore, wantRequests) {
+				t.Fatalf("core requests = %v, want %v", gotCore, wantRequests)
+			}
+			wantGraphProbes := []string{
+				fixtureJobPath + "/42/pipeline-overview/tree",
+				fixtureJobPath + "/42/pipeline-graph/tree",
+			}
+			if source == "no stages" {
+				wantGraphProbes = nil
+			}
+			if !reflect.DeepEqual(gotGraph, wantGraphProbes) {
+				t.Fatalf("graph probe requests = %v, want %v", gotGraph, wantGraphProbes)
 			}
 			_, _ = model.Update(result)
 			if model.loading || model.build == nil || model.ID() != initialID {
@@ -147,6 +165,8 @@ func TestBuildLoadResolvesOnlyMissingData(t *testing.T) {
 			if knownRun.Stages[0].ExecNode != "" {
 				t.Fatal("loading mutated the source Job page's run")
 			}
+			// Leaving a loaded terminal build (CleanUp) and returning (Init) must not reload it.
+			_ = model.CleanUp()
 			if cmd := model.Init(); cmd != nil {
 				t.Fatal("returning to a loaded terminal build should not reload it")
 			}
@@ -189,7 +209,13 @@ func TestBuildKeepsLoadingUntilInitialNodeArrives(t *testing.T) {
 	close(releaseNode)
 	select {
 	case msg := <-result:
-		_, _ = model.Update(msg)
+		_, next := model.Update(msg)
+		// Complete the inline console log fetch kicked off after build metadata arrives.
+		for _, m := range messages(next) {
+			if _, ok := m.(FullLogDownloadedMsg); ok {
+				_, _ = model.Update(m)
+			}
+		}
 	case <-time.After(time.Second):
 		t.Fatal("initial load did not finish")
 	}
@@ -375,7 +401,7 @@ func TestBuildRetriesAfterCancelledLoad(t *testing.T) {
 		t.Fatal("old request affected the retried page")
 	}
 	_, _ = model.Update(batch[1]())
-	if model.loading || model.build == nil || requests.Load() != 4 {
-		t.Fatalf("retry did not load the build: loading=%v, requests=%d", model.loading, requests.Load())
+	if model.loading || model.build == nil || requests.Load() != 6 {
+		t.Fatalf("retry did not load the build: loading=%v, requests=%d (want 4 core + 2 one-time graph probes)", model.loading, requests.Load())
 	}
 }

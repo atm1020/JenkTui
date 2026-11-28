@@ -1,6 +1,8 @@
 package build
 
 import (
+	"github.com/atm1020/jenktui/src/stagegraph"
+
 	"github.com/atm1020/gojenkins"
 )
 
@@ -18,12 +20,24 @@ type BuildFetchedMsg struct {
 	model            *Model
 	Generation       int
 	PipelineRun      gojenkins.PipelineRun
+	PluginTree       *stagegraph.PluginTree
+	StageGraph       *stagegraph.Graph
+	FocusedStageID   string
 	Node             *gojenkins.PipelineNode
 	Build            gojenkins.Build
 	StartedBy        string
 	StartedByDetails string
 	Error            error
 	ErrorTitle       string
+}
+
+// GraphTreeFetchedMsg delivers an asynchronous pipeline-graph-view refresh for
+// an active build during live polling.
+type GraphTreeFetchedMsg struct {
+	model      *Model
+	Generation int
+	Tree       *stagegraph.PluginTree
+	Error      error
 }
 
 // LoadFailedMsg asks the shell to return to the source and show its error dialog.
@@ -66,26 +80,43 @@ type ArtifactsDownloadFailedMsg struct {
 	Error error
 }
 
-type NodeLogDownloaded struct {
-	PiplineNode gojenkins.PipelineNode
-}
-
-type FetchFlowNodeLogMsg struct {
-	FlowNode gojenkins.PipelineNode
-}
-
-// FetchNodeLogMsg requests the parent component to fetch a node's log file.
-// Direction: Child → Parent
+// FetchNodeLogMsg requests the parent build model to load and focus a step's log.
 type FetchNodeLogMsg struct {
 	NodeID string
 }
 
-type FlowNodeLogFetched struct {
-	NodeID   string
-	FileName string
+// StepLogFetchedMsg delivers the inline log file (or empty/error status) for a
+// pipeline flow node without navigating away from the Build page.
+type StepLogFetchedMsg struct {
+	model      *Model
+	Generation int
+	NodeID     string
+	StepName   string
+	FilePath   string
+	Empty      bool
+	Terminal   bool
+	Error      error
 }
 
-// OpenLogViewerMsg requests opening a log file in the log viewer
-type OpenLogViewerMsg struct {
-	FilePath string
+// FullLogDownloadedMsg delivers the downloaded full console log file and its
+// optional stage/step/outside-stage line index for the inline log pane.
+type FullLogDownloadedMsg struct {
+	model      *Model
+	Generation int
+	FilePath   string
+	Index      *LogIndex
+	Terminal   bool
+	Error      error
+}
+
+// ScopedLogExtractedMsg delivers a locally extracted slice of the indexed full
+// console log (for a single stage, single step, or outside-of-stage lines).
+type ScopedLogExtractedMsg struct {
+	model      *Model
+	Generation int
+	Scope      logMode
+	Key        string
+	FilePath   string
+	Empty      bool
+	Error      error
 }

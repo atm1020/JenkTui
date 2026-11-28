@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/atm1020/jenktui/src/jobref"
+	"github.com/atm1020/jenktui/src/stagegraph"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/atm1020/gojenkins"
@@ -18,10 +20,12 @@ func (m *Model) fetchBuild() tea.Cmd {
 	m.fetchGeneration++
 	generation := m.fetchGeneration
 	run, jobURL, jenkins := m.pipelineRun, m.jobURL, m.ctx.Jenkins
+	cache := m.ctx.GraphCapabilityCache()
+	serverKey := m.ctx.GraphServerKey()
 
 	return func() tea.Msg {
 		defer cancel()
-		msg := loadBuild(requestCtx, jenkins, jobURL, run)
+		msg := loadBuild(requestCtx, jenkins, cache, serverKey, jobURL, run)
 		msg.model = m
 		msg.Generation = generation
 		return msg
@@ -31,8 +35,16 @@ func (m *Model) fetchBuild() tea.Cmd {
 // loadBuild gathers everything needed for the first render. A known run from
 // Job skips discovery; a stored My Runs reference (or a build-list entry without
 // a run summary) is resolved here, after navigation. One context cancels the
-// entire initial load, including its final stage-details request.
-func loadBuild(ctx context.Context, jenkins *gojenkins.Jenkins, jobURL string, run gojenkins.PipelineRun) BuildFetchedMsg {
+// entire initial load, including the optional pipeline-graph-view probe and the
+// final stage-details request.
+func loadBuild(
+	ctx context.Context,
+	jenkins *gojenkins.Jenkins,
+	cache *stagegraph.CapabilityCache,
+	serverKey string,
+	jobURL string,
+	run gojenkins.PipelineRun,
+) BuildFetchedMsg {
 	id, err := strconv.ParseInt(run.ID, 10, 64)
 	if err != nil || id <= 0 {
 		return BuildFetchedMsg{Error: fmt.Errorf("invalid build ID: %q", run.ID), ErrorTitle: "Could not load build details"}
@@ -62,11 +74,53 @@ func loadBuild(ctx context.Context, jenkins *gojenkins.Jenkins, jobURL string, r
 		run = *loaded
 	}
 
-	build, err := run.Job.GetBuild(ctx, id)
-	if err != nil {
-		return BuildFetchedMsg{Error: err, ErrorTitle: fmt.Sprintf("Failed to fetch build #%s", run.ID)}
+	var (
+		build      *gojenkins.Build
+		buildErr   error
+		pluginTree *stagegraph.PluginTree
+	)
+
+	if len(run.Stages) > 0 && jenkins != nil && jenkins.Requester != nil {
+		// Fetch build metadata and optional pipeline-graph-view tree concurrently
+		// under one cancellable child context so plugin discovery adds no extra
+		// serial round-trip and fails softly back to wfapi.
+		childCtx, childCancel := context.WithCancel(ctx)
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tree, ok, _ := stagegraph.FetchTree(childCtx, jenkins, cache, serverKey, run)
+			if ok {
+				pluginTree = tree
+			}
+		}()
+		build, buildErr = run.Job.GetBuild(childCtx, id)
+		if buildErr != nil {
+			childCancel()
+		}
+		wg.Wait()
+		childCancel()
+	} else {
+		build, buildErr = run.Job.GetBuild(ctx, id)
 	}
-	msg := BuildFetchedMsg{PipelineRun: run, Build: *build}
+
+	if buildErr != nil {
+		return BuildFetchedMsg{Error: buildErr, ErrorTitle: fmt.Sprintf("Failed to fetch build #%s", run.ID)}
+	}
+
+	var graph stagegraph.Graph
+	if pluginTree != nil {
+		graph = stagegraph.FromPluginTree(pluginTree, run)
+	} else {
+		graph = stagegraph.FromWFAPI(run)
+	}
+
+	msg := BuildFetchedMsg{
+		PipelineRun: run,
+		PluginTree:  pluginTree,
+		StageGraph:  &graph,
+		Build:       *build,
+	}
 	for _, action := range build.Raw.Actions {
 		if action.Causes == nil {
 			continue
@@ -85,11 +139,31 @@ func loadBuild(ctx context.Context, jenkins *gojenkins.Jenkins, jobURL string, r
 	}
 
 	if len(run.Stages) > 0 {
-		stage := run.Stages[focusedStageIndex(run.Stages, 0)]
-		msg.Node, err = run.GetNode(ctx, stage.ID)
-		if err != nil {
-			return BuildFetchedMsg{Error: err, ErrorTitle: fmt.Sprintf("Could not get '%s' Build stage details", stage.Name)}
+		targetStage := initialStageToFetch(graph, run.Stages)
+		if targetStage.ID != "" {
+			msg.FocusedStageID = targetStage.ID
+			msg.Node, err = run.GetNode(ctx, targetStage.ID)
+			if err != nil {
+				return BuildFetchedMsg{Error: err, ErrorTitle: fmt.Sprintf("Could not get '%s' Build stage details", targetStage.Name)}
+			}
 		}
 	}
 	return msg
+}
+
+func initialStageToFetch(graph stagegraph.Graph, rawStages []gojenkins.PipelineNode) stagegraph.StageNode {
+	rows := stagegraph.Flatten(graph)
+	idx := stagegraph.InitialFocusIndex(rows)
+	if idx >= 0 {
+		for i := range rows {
+			if rows[i].Navigable && rows[i].NavIndex == idx {
+				return rows[i].Node
+			}
+		}
+	}
+	if len(rawStages) > 0 {
+		s := rawStages[0]
+		return stagegraph.StageNode{ID: s.ID, Name: s.Name}
+	}
+	return stagegraph.StageNode{}
 }

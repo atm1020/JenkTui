@@ -14,12 +14,14 @@ import (
 	"github.com/atm1020/jenktui/src/context"
 	"github.com/atm1020/jenktui/src/jobref"
 	"github.com/atm1020/jenktui/src/poll"
+	"github.com/atm1020/jenktui/src/stagegraph"
 	"github.com/atm1020/jenktui/src/ui/animation"
 	"github.com/atm1020/jenktui/src/ui/buildaction"
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/artifactselector"
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/confirm"
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/nodeselector"
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/paramsview"
+	"github.com/atm1020/jenktui/src/ui/components/logviewer"
 	"github.com/atm1020/jenktui/src/ui/styles"
 	"github.com/atm1020/jenktui/src/ui/util"
 
@@ -37,6 +39,24 @@ import (
 const (
 	StageBoxWidth  = 22
 	StageBoxHeight = 8
+
+	buildInfoPanelHeight = 5 // 2 border lines + 3 compact metadata lines
+	narrowSplitThreshold = 56
+)
+
+type focusPane int
+
+const (
+	focusBuild focusPane = iota
+	focusLog
+)
+
+type activeBorder int
+
+const (
+	borderStages activeBorder = iota
+	borderSteps
+	borderLog
 )
 
 type Model struct {
@@ -51,36 +71,47 @@ type Model struct {
 	// pulseBar fills the running stage box, as on the job page.
 	pulseBar *animation.PulseBar
 	// clock is the page's one animation timer: the loading and header
-	// spinners, the stage pulse, and the stage-details step spinner all
-	// advance on its frames.
+	// spinners, the stage pulse, the stage-details step spinner, and the
+	// inline log loading indicator all advance on its frames.
 	clock animation.FrameClock
 	// entered is true between Init and CleanUp. Only an entered page is on
 	// screen, so late messages cannot start the clock on any other.
 	entered bool
 	// sections caches the page by section; a frame re-renders only the
-	// sections that show a spinner.
+	// sections that show a spinner or pulse.
 	sections  pageSections
 	stageView *viewport.Model
 
 	stageDetails *StageDetails
+	logPane      *logPane
+
+	focusPane      focusPane
+	activeBorder   activeBorder
+	startInFullLog bool
 
 	loading  bool
 	jobURL   string
 	buildURL string
 
-	focusedStageIdx   int
-	pollWatch         *poll.Watch
-	fetchGeneration   int
-	cancelRequest     cc.CancelFunc
-	nodeGeneration    int
-	cancelNodeRequest cc.CancelFunc
-	paramsRequest     buildaction.ParamsRequest
+	pluginTree         *stagegraph.PluginTree
+	stageGraph         stagegraph.Graph
+	navStages          []stagegraph.StageNode
+	focusedStageIdx    int
+	userSelectedStage  bool
+	pollWatch          *poll.Watch
+	fetchGeneration    int
+	cancelRequest      cc.CancelFunc
+	nodeGeneration     int
+	cancelNodeRequest  cc.CancelFunc
+	graphGeneration    int
+	cancelGraphRequest cc.CancelFunc
+	paramsRequest      buildaction.ParamsRequest
 }
 
 func NewModel(ctx *context.ProgramContext, pipelineRun gojenkins.PipelineRun, width, height int) *Model {
 	vp := viewport.New()
-	vp.SetWidth(width)
-	vp.SetHeight(10)
+	vp.SetWidth(max(1, width-2))
+	vp.SetHeight(timelineMinHeight)
 
 	jobURL := ""
 	if pipelineRun.Job != nil && pipelineRun.Job.GetDetails() != nil {
@@ -90,13 +121,18 @@ func NewModel(ctx *context.ProgramContext, pipelineRun gojenkins.PipelineRun, wi
 	if jobURL != "" {
 		buildURL = strings.TrimRight(jobURL, "/") + "/" + pipelineRun.ID
 	}
-	if ctx.Jenkins != nil {
+	if ctx != nil && ctx.Jenkins != nil {
 		buildURL = jobref.ToAbsolute(ctx.Jenkins.Server, buildURL)
 	}
 	// The source Job page can retain this run in history; own the stage slice.
 	pipelineRun.Stages = slices.Clone(pipelineRun.Stages)
-	keyMap := UserKeyMap(ctx.Config.KeyMapConfig.Build)
-	return &Model{
+	var keyMap *KeyMap
+	if ctx != nil && ctx.Config != nil {
+		keyMap = UserKeyMap(ctx.Config.KeyMapConfig.Build)
+	} else {
+		keyMap = &KeyMap{}
+	}
+	m := &Model{
 		loading:      true,
 		jobURL:       jobURL,
 		buildURL:     strings.TrimRight(buildURL, "/"),
@@ -104,12 +140,17 @@ func NewModel(ctx *context.ProgramContext, pipelineRun gojenkins.PipelineRun, wi
 		wWidth:       width,
 		wHeight:      height,
 		pipelineRun:  pipelineRun,
-		keyMap:       UserKeyMap(ctx.Config.KeyMapConfig.Build),
+		keyMap:       keyMap,
 		spinnerModel: newSpinnerModel(),
 		pulseBar:     newPulseBar(),
 		stageDetails: NewStageDetails(width, height, keyMap),
+		logPane:      newLogPane(width, height),
 		stageView:    &vp,
+		focusPane:    focusBuild,
+		activeBorder: borderStages,
 	}
+	m.syncPaneFocus()
+	return m
 }
 
 // NewModelFromURL opens a stored build reference without contacting Jenkins.
@@ -122,15 +163,55 @@ func NewModelFromURL(ctx *context.ProgramContext, jobURL, buildID string, width,
 	return m
 }
 
+// NewModelForLog opens the unified Build page directly in zoomed full console
+// log mode (used when pressing 'L' from Job or My Runs). Pressing 'z' unzooms
+// into the full Build + Stages + Steps + Log view.
+func NewModelForLog(ctx *context.ProgramContext, pipelineRun gojenkins.PipelineRun, width, height int) *Model {
+	m := NewModel(ctx, pipelineRun, width, height)
+	m.startInFullLog = true
+	m.focusPane = focusLog
+	m.activeBorder = borderLog
+	m.logPane.mode = logModeFull
+	m.logPane.zoomed = true
+	m.syncPaneFocus()
+	m.syncPaneSizes()
+	return m
+}
+
+// NewModelForLogFromURL opens a stored run reference directly in zoomed full
+// console log mode without contacting Jenkins before navigation.
+func NewModelForLogFromURL(ctx *context.ProgramContext, jobURL, buildID string, width, height int) *Model {
+	absURL := jobref.ToAbsolute(ctx.Jenkins.Server, jobURL)
+	jobID, parentIDs := jobref.ToIDAndParents(absURL)
+	job := ctx.Jenkins.JobRef(jobID, parentIDs...)
+	job.Raw.URL = absURL
+	run := gojenkins.PipelineRun{
+		ID:   buildID,
+		Base: strings.TrimRight(job.Base, "/") + "/" + buildID,
+		Job:  job,
+	}
+	m := NewModelForLog(ctx, run, width, height)
+	m.jobURL = absURL
+	return m
+}
+
 func (m *Model) Init() tea.Cmd {
 	m.entered = true
+	var cmds []tea.Cmd
+	if anim := m.ensureAnimation(); anim != nil {
+		cmds = append(cmds, anim)
+	}
 	if m.loading {
-		return tea.Batch(m.ensureAnimation(), m.fetchBuild())
+		cmds = append(cmds, m.fetchBuild())
+	} else if !m.isTerminal() {
+		cmds = append(cmds, m.watchExactRun())
 	}
-	if !m.isTerminal() {
-		return tea.Batch(m.ensureAnimation(), m.watchExactRun())
+	if m.startInFullLog && m.logPane != nil && m.logPane.viewer == nil && !m.logPane.loading {
+		if cmd := m.loadFullLog(false); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	}
-	return nil
+	return tea.Batch(cmds...)
 }
 
 // Update ends by syncing the animation clock, so any message that starts or
@@ -141,6 +222,11 @@ func (m *Model) Update(msg tea.Msg) (util.JenkTuiModel, tea.Cmd) {
 }
 
 func (m *Model) View() string {
+	if m.logPane != nil && m.logPane.zoomed {
+		// In zoomed log mode (including when opened directly via 'L'), render
+		// the log panel immediately so full-log download does not wait on build metadata.
+		return m.renderSections()
+	}
 	if m.loading {
 		return m.renderLoading()
 	}
@@ -152,12 +238,16 @@ func (m *Model) ID() string {
 }
 
 func (m *Model) UpdateFooter() tea.Cmd {
+	if m.logPane != nil && m.logPane.mode == logModeFull && (m.startInFullLog || m.logPane.zoomed || m.focusPane == focusLog) {
+		return util.CmdFooterUrl(m.buildURL + "/console")
+	}
 	return util.CmdFooterUrl(m.buildURL)
 }
 
 func (m *Model) CleanUp() tea.Cmd {
 	m.cancelInFlightRequest()
 	m.cancelNodeFetch()
+	m.cancelGraphFetch()
 	m.entered = false
 	m.clock.Stop()
 	m.sections.reset()
@@ -165,17 +255,52 @@ func (m *Model) CleanUp() tea.Cmd {
 	// Invalidate even a response that finished just before cancellation.
 	m.fetchGeneration++
 	m.nodeGeneration++
+	m.graphGeneration++
 	m.paramsRequest.Invalidate()
 	if m.pollWatch != nil {
 		m.pollWatch.Release()
 		m.pollWatch = nil
 		log.Debug("build: CleanUp released poll watch", "buildID", m.ID())
 	}
+	if m.logPane != nil {
+		return m.logPane.cleanUp()
+	}
 	return nil
 }
 
 func (m *Model) KeyMap() help.KeyMap {
+	if m.focusPane == focusLog && m.logPane != nil && m.logPane.viewer != nil {
+		return &logFocusedKeyMap{build: m.keyMap, log: m.logPane.viewer.KeyMap()}
+	}
 	return m.keyMap
+}
+
+// IsCapturingInput reports whether the inline log viewer is actively capturing
+// text (search input or visual selection) so the app shell withholds global
+// letter shortcuts like Back ("b") and My Runs ("m").
+func (m *Model) IsCapturingInput() bool {
+	return m.logPane != nil && m.logPane.isCapturingInput()
+}
+
+type logFocusedKeyMap struct {
+	build *KeyMap
+	log   help.KeyMap
+}
+
+func (k *logFocusedKeyMap) ShortHelp() []key.Binding {
+	out := append([]key.Binding(nil), k.log.ShortHelp()...)
+	if k.build != nil {
+		out = append(out, k.build.SwitchPane, k.build.FocusBuild, k.build.ZoomLog, k.build.OpenFullLog)
+	}
+	return out
+}
+
+func (k *logFocusedKeyMap) FullHelp() [][]key.Binding {
+	groups := append([][]key.Binding(nil), k.log.FullHelp()...)
+	if k.build != nil {
+		groups = append(groups, []key.Binding{k.build.SwitchPane, k.build.FocusBuild, k.build.ZoomLog, k.build.OpenFullLog})
+	}
+	return groups
 }
 
 func (m *Model) handleMsg(msg tea.Msg) tea.Cmd {
@@ -189,6 +314,8 @@ func (m *Model) handleMsg(msg tea.Msg) tea.Cmd {
 		return m.handleWindowSizeMsg(msg)
 	case BuildFetchedMsg:
 		return m.handleBuildFetchMsg(msg)
+	case GraphTreeFetchedMsg:
+		return m.handleGraphTreeFetched(msg)
 	case animation.FrameMsg:
 		return m.handleAnimationFrame(msg)
 	case BuildParamsFetchedMsg:
@@ -207,14 +334,31 @@ func (m *Model) handleMsg(msg tea.Msg) tea.Cmd {
 	case NodeDownloadedMsg:
 		return m.handleNodeDownloaded(msg)
 	case FetchNodeLogMsg:
-		return m.downloadFlowNodeLog(msg.NodeID)
-	case FlowNodeLogFetched:
-		return util.CmdHandler(OpenLogViewerMsg{
-			FilePath: msg.FileName,
-		})
+		return m.handleFetchNodeLog(msg)
+	case StepLogFetchedMsg:
+		return m.handleStepLogFetched(msg)
+	case FullLogDownloadedMsg:
+		return m.handleFullLogDownloaded(msg)
+	case ScopedLogExtractedMsg:
+		return m.handleScopedLogExtracted(msg)
+	case logviewer.ChunkLoadedMsg:
+		cmd := m.updateLogViewer(msg)
+		if m.logPane != nil && m.logPane.pendingJumpLine > 0 && m.logPane.viewer != nil && m.logPane.viewer.TotalLines() > 0 {
+			jumpLine := m.logPane.pendingJumpLine
+			m.logPane.pendingJumpLine = 0
+			return tea.Batch(cmd, m.logPane.viewer.JumpToLine(jumpLine))
+		}
+		return cmd
 	}
 
-	return m.updateStageDetails(msg)
+	var cmds []tea.Cmd
+	if cmd := m.updateLogViewer(msg); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	if cmd := m.updateStageDetails(msg); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) renderLoading() string {
@@ -258,21 +402,18 @@ func (m *Model) isTerminal() bool {
 	return buildstatus.PipelineStatus(m.pipelineRun.Status).IsTerminal(m.pipelineRun.EndTime)
 }
 
-func (m *Model) isStageDetailsReady() bool {
-	if len(m.pipelineRun.Stages) == 0 {
-		return true
-	}
-	return m.stageDetails != nil
-}
-
+// renderBuildInfo draws the compact Omaci-inspired framed build summary bar
+// (5 lines tall including borders), keeping all build metadata and artifacts
+// readable while leaving generous vertical space for the timeline, steps, and log.
 func (m *Model) renderBuildInfo(spinnerView string) string {
 	run := m.pipelineRun
 	t := styles.GetTheme()
-	buildInfoStyle := t.S().Base.
-		Width(40).
-		Padding(2).
-		// Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Primary)
+	width := m.wWidth
+	if width <= 0 {
+		width = 100
+	}
+	width = max(20, width)
+	innerW := width - 2
 
 	status := buildstatus.PipelineStatus(run.Status).
 		NormalizeQueueState(len(run.Stages), run.EndTime)
@@ -285,6 +426,7 @@ func (m *Model) renderBuildInfo(spinnerView string) string {
 	if m.isRunning() {
 		spinnerStr = spinnerView + " "
 	}
+
 	nodes := collectNodes(run.Stages)
 	nodeName := "—"
 	if len(nodes) == 1 {
@@ -293,17 +435,93 @@ func (m *Model) renderBuildInfo(spinnerView string) string {
 		nodeName = fmt.Sprintf("multiple (%d)", len(nodes))
 	}
 
-	buildInfo := lipgloss.JoinVertical(lipgloss.Left,
-		t.S().Title.Render(fmt.Sprintf("%sBuild %s %s", spinnerStr, run.Name, statusIcon)),
-		"",
-		t.S().Base.Bold(true).Render("Started: ")+util.FormatStartTime(run.StartTime),
-		t.S().Base.Bold(true).Render("Duration: ")+util.FormatDuration(run.Duration),
-		t.S().Base.Bold(true).Render("Status: ")+statusText,
-		t.S().Base.Bold(true).Render("Started by: ")+m.startedBy,
-		t.S().Base.Bold(true).Render("Details: ")+m.startedByDetails,
-		t.S().Base.Bold(true).Render("Node: ")+nodeName,
+	sep := t.S().Base.Foreground(t.FaintBorder).Render("  ·  ")
+	label := func(name string) string { return t.S().Base.Bold(true).Render(name) }
+
+	row1 := " " + t.S().Title.Render(fmt.Sprintf("%sBuild %s %s", spinnerStr, run.Name, statusIcon)) +
+		sep + label("Started: ") + util.FormatStartTime(run.StartTime) +
+		sep + label("Duration: ") + util.FormatDuration(run.Duration) +
+		sep + label("Status: ") + statusText
+
+	startedBy := m.startedBy
+	if startedBy == "" {
+		startedBy = "—"
+	}
+	row2 := " " + label("Started by: ") + startedBy
+	if m.startedByDetails != "" && m.startedByDetails != m.startedBy {
+		row2 += sep + label("Details: ") + m.startedByDetails
+	}
+	row2 += sep + label("Node: ") + nodeName
+
+	row3 := " " + m.renderArtifactsInline(innerW-1)
+
+	body := strings.Join([]string{
+		ansi.Truncate(row1, innerW, "…"),
+		ansi.Truncate(row2, innerW, "…"),
+		ansi.Truncate(row3, innerW, "…"),
+	}, "\n")
+
+	note := ""
+	if m.jobURL != "" {
+		note = jobref.ToDisplayName(m.jobURL)
+	}
+	right := fmt.Sprintf("%s%s %s", spinnerStr, statusIcon, statusText)
+	return renderPanelFrame(panelFrameOpts{
+		Title:  "build",
+		Note:   note,
+		Right:  right,
+		Width:  width,
+		Height: buildInfoPanelHeight,
+		Active: false,
+	}, body)
+}
+
+func (m *Model) renderArtifactsInline(maxW int) string {
+	t := styles.GetTheme()
+	prefix := t.S().Subtitle.Render("Artifacts") + t.S().Base.Bold(true).Render(": ")
+	if m.build == nil {
+		return prefix + t.S().Base.Foreground(t.SubtleText).Render("No artifacts created")
+	}
+	artifacts := m.build.GetArtifacts()
+	if len(artifacts) == 0 {
+		return prefix + t.S().Base.Foreground(t.SubtleText).Render("No artifacts created")
+	}
+	names := make([]string, 0, len(artifacts))
+	for i, artifact := range artifacts {
+		names = append(names, fmt.Sprintf("%d. %s", i+1, artifact.FileName))
+	}
+	return ansi.Truncate(prefix+strings.Join(names, ", "), max(1, maxW), "…")
+}
+
+func (m *Model) renderStagesPanel() string {
+	m.updateStageViewLayout()
+	note, count := m.stagesPanelMeta()
+	t := styles.GetTheme()
+	right := ""
+	if count != "" {
+		right = t.S().Base.Foreground(t.SubtleText).Render(count)
+	}
+	return renderPanelFrame(panelFrameOpts{
+		Title:  "stages",
+		Note:   note,
+		Right:  right,
+		Width:  max(4, m.wWidth),
+		Height: m.stageView.Height() + 2,
+		Active: m.focusPane == focusBuild && m.activeBorder == borderStages,
+	}, m.stageView.View())
+}
+
+func (m *Model) renderLogPanel(spinnerView string) string {
+	if m.logPane == nil {
+		return ""
+	}
+	return m.logPane.render(
+		spinnerView,
+		m.focusPane == focusLog,
+		m.pipelineRun.ID,
+		len(m.pipelineRun.Stages) > 0,
+		m.isTerminal(),
 	)
-	return buildInfoStyle.Render(buildInfo)
 }
 
 func (m *Model) getStatusIcon(status buildstatus.PipelineStatus) string {
@@ -399,11 +617,25 @@ func (m *Model) ApplyPollSnapshot(snapshot poll.Snapshot) tea.Cmd {
 		m.pollWatch.Release()
 		m.pollWatch = nil
 	}
-	if m.stageDetails == nil {
-		return animationCmd
+
+	m.rebuildStageGraph(m.focusedStageID(), m.userSelectedStage)
+	m.ensureFocusedStageVisible()
+	m.syncPaneSizes()
+
+	var cmds []tea.Cmd
+	if animationCmd != nil {
+		cmds = append(cmds, animationCmd)
 	}
-	m.updateFocusedStageIdx()
-	return tea.Batch(animationCmd, m.getNode())
+	if !m.isTerminal() && m.isActive() && len(m.pipelineRun.Stages) > 0 {
+		if graphCmd := m.refreshGraphTree(); graphCmd != nil {
+			cmds = append(cmds, graphCmd)
+		}
+	}
+	if m.stageDetails == nil {
+		return tea.Batch(cmds...)
+	}
+	cmds = append(cmds, m.getNode())
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) cancelInFlightRequest() {
@@ -443,56 +675,27 @@ func (m *Model) navigateAfterTrigger(msg util.RunTriggeredMsg) tea.Cmd {
 	return util.CmdHandler(util.OpenJobComponentMsg{Job: job})
 }
 
-func (m *Model) renderArtifacts() string {
-	t := styles.GetTheme()
-	var artifactLines []string
-	artifactLines = append(artifactLines, t.S().Subtitle.Render("Artifacts"))
-	if m.build != nil {
-		artifacts := m.build.GetArtifacts()
-		if len(artifacts) == 0 {
-			artifactLines = append(artifactLines, "No artifacts created")
-			return lipgloss.JoinVertical(lipgloss.Left, artifactLines...)
-		}
-
-		artifactStyle := t.S().Base
-
-		for i, artifact := range artifacts {
-			artifactInfo := lipgloss.JoinVertical(lipgloss.Left,
-				t.S().Base.Bold(true).Render(fmt.Sprintf("%d. %s", i+1, artifact.FileName)),
-			)
-			artifactLines = append(artifactLines, artifactStyle.Render(artifactInfo))
-		}
-	}
-
-	return lipgloss.JoinVertical(lipgloss.Left, artifactLines...)
-}
-
 func (m *Model) renderBuildFlow() string {
 	t := styles.GetTheme()
 	run := m.pipelineRun
 
-	var sections []string
-	// Stages Section
 	switch {
 	case len(run.Stages) > 0:
-		sections = append(sections, m.renderStages())
+		return m.renderStages()
 	case m.isTerminal():
 		// wfapi reports the stage graph, not the build result. A run that never
 		// reaches a stage (e.g. a Jenkinsfile parse error) has no graph to report
 		// on, so it shows up here with zero stages regardless of pass/fail.
-		sections = append(sections, m.renderNoStageData())
+		return m.renderNoStageData()
 	default:
-		queue := t.S().Base.Foreground(t.Grey).
+		return t.S().Base.Foreground(t.Grey).
 			Bold(true).
 			Italic(true).
 			Render("Build in queue...")
-		sections = append(sections, queue)
 	}
-
-	return lipgloss.JoinVertical(lipgloss.Center, sections...)
 }
 
-// renderNoStageData renders a placeholder box for a run with no stage graph,
+// renderNoStageData renders a placeholder for a run with no stage graph,
 // telling the user where to look instead of leaving the view blank.
 func (m *Model) renderNoStageData() string {
 	t := styles.GetTheme()
@@ -505,124 +708,240 @@ func (m *Model) renderNoStageData() string {
 }
 
 func (m *Model) renderStages() string {
-	t := styles.GetTheme()
-	boxWidth := styles.StageBoxContentWidth(m.wWidth)
-	var stageBoxes []string
-
-	for i, stage := range m.pipelineRun.Stages {
-		var cellContent, cellStatus string
-		var cellStyle lipgloss.Style
-
-		duration := util.FormatDuration(stage.Duration)
-		status := buildstatus.PipelineStatus(stage.Status)
-		activity, outcome := status.Activity(0), status.Outcome()
-		cellStatus = status.Label()
-
-		switch {
-		case activity == buildstatus.ActivityQueued,
-			activity == buildstatus.ActivityPending,
-			outcome == buildstatus.OutcomeUnstable:
-			cellStyle = t.S().StageBox.Pending
-		case activity == buildstatus.ActivityPaused:
-			cellStyle = t.S().StageBox.Pending
-			cellStatus = t.S().Base.Foreground(t.Warning).Render(status.Label())
-		case activity == buildstatus.ActivityRunning:
-			cellStyle = t.S().StageBox.Running
-			cellStatus = m.pulseBar.View()
-		case outcome == buildstatus.OutcomeSuccess:
-			cellStyle = t.S().StageBox.Success
-		case outcome == buildstatus.OutcomeFailure:
-			cellStyle = t.S().StageBox.Failed
-		case outcome == buildstatus.OutcomeAborted:
-			cellStyle = t.S().StageBox.Aborted
-		case outcome == buildstatus.OutcomeNotBuilt:
-			cellStyle = t.S().StageBox.NotExecuted
-			duration = "-"
-		}
-
-		// Apply focused border if this stage is focused and stage view is active
-		if i == m.focusedStageIdx {
-			cellStyle = cellStyle.BorderForeground(t.StageFocusedBorder).Border(lipgloss.DoubleBorder())
-		}
-
-		cellContent = lipgloss.JoinVertical(lipgloss.Center,
-			util.TurncateString(stage.Name, boxWidth-4),
-			duration,
-			cellStatus,
-		)
-
-		stageBoxes = append(stageBoxes, cellStyle.Width(boxWidth).Render(cellContent))
-	}
-
-	return lipgloss.JoinHorizontal(lipgloss.Center, stageBoxes...)
+	return m.renderTimeline()
 }
 
 func (m *Model) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
-	if m.loading {
+	if m.loading && (m.logPane == nil || !m.logPane.zoomed) {
 		return nil
 	}
+
+	// While the inline log viewer is in search input or visual selection mode,
+	// route every keypress directly to it without intercepting page shortcuts.
+	if m.logPane != nil && m.logPane.isCapturingInput() {
+		return m.updateLogViewer(msg)
+	}
+
+	if key.Matches(msg, m.keyMap.SwitchPane) {
+		return m.togglePaneFocus()
+	}
+	if key.Matches(msg, m.keyMap.ZoomLog) {
+		return m.toggleZoomLog()
+	}
+	if key.Matches(msg, m.keyMap.OpenFullLog) {
+		return m.toggleFullLog()
+	}
+	if key.Matches(msg, m.keyMap.LogScopeFull) {
+		return m.setLogScope(logModeFull, false)
+	}
+	if key.Matches(msg, m.keyMap.LogScopeStage) {
+		return m.setLogScope(logModeStage, false)
+	}
+	if key.Matches(msg, m.keyMap.LogScopeStep) {
+		return m.setLogScope(logModeStep, false)
+	}
+	if key.Matches(msg, m.keyMap.LogScopeOutside) {
+		return m.setLogScope(logModeOutside, false)
+	}
+
+	if m.focusPane == focusLog {
+		return m.handleKeyPressMsgLogPane(msg)
+	}
+	return m.handleKeyPressMsgBuildPane(msg)
+}
+
+func (m *Model) togglePaneFocus() tea.Cmd {
+	if m.logPane != nil && m.logPane.zoomed {
+		m.logPane.zoomed = false
+		m.focusPane = focusBuild
+		m.activeBorder = borderSteps
+		m.syncPaneFocus()
+		m.syncPaneSizes()
+		return nil
+	}
+	if m.focusPane == focusLog {
+		m.focusPane = focusBuild
+		m.activeBorder = borderSteps
+	} else {
+		m.focusPane = focusLog
+		m.activeBorder = borderLog
+	}
+	m.syncPaneFocus()
+	m.syncPaneSizes()
+	return nil
+}
+
+func (m *Model) toggleZoomLog() tea.Cmd {
+	if m.logPane == nil {
+		return nil
+	}
+	m.logPane.zoomed = !m.logPane.zoomed
+	if m.logPane.zoomed {
+		m.focusPane = focusLog
+		m.activeBorder = borderLog
+	}
+	m.syncPaneFocus()
+	m.syncPaneSizes()
+	return nil
+}
+
+func (m *Model) toggleFullLog() tea.Cmd {
+	if m.logPane == nil {
+		return nil
+	}
+	if m.logPane.mode == logModeFull {
+		if m.hasSelectedStep() && !m.stageDetailsStale() {
+			return m.setLogScope(logModeStep, false)
+		}
+		if _, ok := m.focusedNavStage(); ok {
+			return m.setLogScope(logModeStage, false)
+		}
+	}
+	m.focusPane = focusLog
+	m.activeBorder = borderLog
+	m.syncPaneFocus()
+	m.syncPaneSizes()
+	return m.setLogScope(logModeFull, false)
+}
+
+func (m *Model) handleKeyPressMsgLogPane(msg tea.KeyPressMsg) tea.Cmd {
+	if key.Matches(msg, m.keyMap.FocusBuild) {
+		if m.logPane != nil {
+			m.logPane.zoomed = false
+		}
+		m.focusPane = focusBuild
+		m.activeBorder = borderSteps
+		m.syncPaneFocus()
+		m.syncPaneSizes()
+		return nil
+	}
+
+	if msg.String() == "esc" {
+		if m.logPane != nil && m.logPane.zoomed {
+			m.logPane.zoomed = false
+			m.syncPaneSizes()
+			return nil
+		}
+		m.focusPane = focusBuild
+		m.activeBorder = borderSteps
+		m.syncPaneFocus()
+		m.syncPaneSizes()
+		return nil
+	}
+
+	if key.Matches(msg, m.keyMap.OpenStepLog) {
+		return m.applyCurrentLogScope(true)
+	}
+
+	// Allow non-colliding build actions while viewing the log.
+	if cmd, handled := m.handleSharedBuildActions(msg); handled {
+		return cmd
+	}
+
+	return m.updateLogViewer(msg)
+}
+
+func (m *Model) handleKeyPressMsgBuildPane(msg tea.KeyPressMsg) tea.Cmd {
+	// Quick ergonomic bridges from Steps/Stages straight into Log actions:
+	// '/' opens log search, 'w' toggles wrap.
+	if m.logPane != nil && m.logPane.viewer != nil {
+		if msg.String() == "/" {
+			m.focusPane = focusLog
+			m.activeBorder = borderLog
+			m.syncPaneFocus()
+			m.syncPaneSizes()
+			return m.logPane.viewer.FocusSearch()
+		}
+		if msg.String() == "w" {
+			m.logPane.viewer.ToggleWrap()
+			return nil
+		}
+	}
+
 	var cmds []tea.Cmd
+	prevStageID := m.focusedStageID()
 	cmds = append(cmds, m.handleKeyPressMsgStageView(msg))
+	stageChanged := m.focusedStageID() != prevStageID
+
+	prevStepID := ""
+	if step, ok := m.selectedStep(); ok {
+		prevStepID = step.ID
+	}
+
 	if m.stageDetailsStale() {
 		cmds = append(cmds, m.handleKeyPressMsgStaleDetails(msg))
 	} else {
+		if key.Matches(msg, m.keyMap.Up) || key.Matches(msg, m.keyMap.Down) {
+			m.activeBorder = borderSteps
+			m.syncPaneFocus()
+		}
 		cmds = append(cmds, m.handleKeyPressMsgDetailsView(msg))
 	}
 
-	stage, cmd := m.stageView.Update(msg)
-	m.stageView = &stage
-	cmds = append(cmds, cmd)
+	if m.logPane != nil {
+		if stageChanged {
+			// Immediately jump in full-log mode or re-scope stage mode without
+			// waiting for wfapi stage details.
+			switch m.logPane.mode {
+			case logModeFull:
+				if cmd := m.jumpFullLogToCurrentSelection(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			case logModeStage:
+				if cmd := m.applyCurrentLogScope(false); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+		} else if !m.stageDetailsStale() {
+			if step, ok := m.selectedStep(); ok && step.ID != "" && step.ID != prevStepID {
+				switch m.logPane.mode {
+				case logModeFull:
+					if cmd := m.jumpFullLogToCurrentSelection(); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+				case logModeStep:
+					if cmd := m.applyCurrentLogScope(false); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+				}
+			}
+		}
+	}
+
+	if !key.Matches(msg, m.keyMap.Up) && !key.Matches(msg, m.keyMap.Down) && m.stageView != nil {
+		stage, cmd := m.stageView.Update(msg)
+		m.stageView = &stage
+		cmds = append(cmds, cmd)
+	}
 	return tea.Batch(cmds...)
 }
 
-func (m *Model) handleKeyPressMsgStageView(msg tea.KeyPressMsg) tea.Cmd {
+func (m *Model) handleSharedBuildActions(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if m.build == nil {
-		return nil
+		return nil, false
 	}
-
-	if key.Matches(msg, m.keyMap.OpenFullLog) {
-		return buildaction.OpenLog(m.pipelineRun)
-	}
-
-	if key.Matches(msg, m.keyMap.OpenJob) {
-		return buildaction.OpenJob(m.pipelineRun.Job)
-	}
-
-	if key.Matches(msg, m.keyMap.Replay) {
+	switch {
+	case key.Matches(msg, m.keyMap.OpenJob):
+		return buildaction.OpenJob(m.pipelineRun.Job), true
+	case key.Matches(msg, m.keyMap.Replay):
 		return util.CmdHandler(ReplayMsg{
 			Job:         m.pipelineRun.Job,
 			PipelineRun: m.pipelineRun,
-		})
-	}
-
-	if key.Matches(msg, m.keyMap.ShowParams) {
-		return m.fetchBuildParams()
-	}
-
-	if key.Matches(msg, m.keyMap.TriggerBuild) {
-		return m.paramsRequest.Fetch(m.pipelineRun.Job)
-	}
-
-	if key.Matches(msg, m.keyMap.CancelBuild) {
-		return buildaction.ConfirmAbort(m.ctx, m.pipelineRun.Job, m.pipelineRun.ID, m.isTerminal())
-	}
-
-	if key.Matches(msg, m.keyMap.OpenBuildBrowser) {
-		return buildaction.OpenBuildInBrowser(m.pipelineRun.Job.Raw.URL, m.pipelineRun.ID)
-	}
-
-	if key.Matches(msg, m.keyMap.OpenJobBrowser) {
-		return buildaction.OpenJobInBrowser(m.pipelineRun.Job.Raw.URL)
-	}
-
-	if key.Matches(msg, m.keyMap.DownloadAllArtifacts) {
-		return m.startArtifactDownload(m.build.GetArtifacts())
-	}
-
-	if key.Matches(msg, m.keyMap.DownloadArtifacts) {
+		}), true
+	case key.Matches(msg, m.keyMap.TriggerBuild):
+		return m.paramsRequest.Fetch(m.pipelineRun.Job), true
+	case key.Matches(msg, m.keyMap.CancelBuild):
+		return buildaction.ConfirmAbort(m.ctx, m.pipelineRun.Job, m.pipelineRun.ID, m.isTerminal()), true
+	case key.Matches(msg, m.keyMap.OpenBuildBrowser):
+		return buildaction.OpenBuildInBrowser(m.pipelineRun.Job.Raw.URL, m.pipelineRun.ID), true
+	case key.Matches(msg, m.keyMap.OpenJobBrowser):
+		return buildaction.OpenJobInBrowser(m.pipelineRun.Job.Raw.URL), true
+	case key.Matches(msg, m.keyMap.DownloadAllArtifacts):
+		return m.startArtifactDownload(m.build.GetArtifacts()), true
+	case key.Matches(msg, m.keyMap.DownloadArtifacts):
 		artifacts := m.build.GetArtifacts()
 		if len(artifacts) <= 1 {
-			return m.startArtifactDownload(artifacts)
+			return m.startArtifactDownload(artifacts), true
 		}
 		dialog := artifactselector.New(
 			artifacts,
@@ -631,7 +950,22 @@ func (m *Model) handleKeyPressMsgStageView(msg tea.KeyPressMsg) tea.Cmd {
 			m.startArtifactDownload,
 			m.ctx.Config.KeyMapConfig.Dialog.ArtifactSelector,
 		)
-		return util.CmdHandler(util.OpenDialogMsg{Dialog: dialog})
+		return util.CmdHandler(util.OpenDialogMsg{Dialog: dialog}), true
+	}
+	return nil, false
+}
+
+func (m *Model) handleKeyPressMsgStageView(msg tea.KeyPressMsg) tea.Cmd {
+	if m.build == nil {
+		return nil
+	}
+
+	if cmd, handled := m.handleSharedBuildActions(msg); handled {
+		return cmd
+	}
+
+	if key.Matches(msg, m.keyMap.ShowParams) {
+		return m.fetchBuildParams()
 	}
 
 	if key.Matches(msg, m.keyMap.CopyNode) {
@@ -658,24 +992,31 @@ func (m *Model) handleKeyPressMsgStageView(msg tea.KeyPressMsg) tea.Cmd {
 		}
 	}
 
-	if len(m.pipelineRun.Stages) > 0 {
+	navStages := m.navigableStages()
+	if len(navStages) > 0 {
 		if key.Matches(msg, m.keyMap.NextStage) {
-			m.focusedStageIdx = (m.focusedStageIdx + 1) % len(m.pipelineRun.Stages)
-			// m.stageDeatils.pipelineNode = &m.pipelineRun.Stages[m.focusedStageIdx]
-			// return nil
-
-			m.stageDetails.init()
+			m.focusedStageIdx = (m.focusedStageIdx + 1) % len(navStages)
+			m.userSelectedStage = true
+			m.activeBorder = borderStages
+			m.syncPaneFocus()
+			if m.stageDetails != nil {
+				m.stageDetails.init()
+			}
+			m.ensureFocusedStageVisible()
 			return m.getNode()
 		}
 		if key.Matches(msg, m.keyMap.PrevStage) {
 			m.focusedStageIdx--
 			if m.focusedStageIdx < 0 {
-				m.focusedStageIdx = len(m.pipelineRun.Stages) - 1
+				m.focusedStageIdx = len(navStages) - 1
 			}
-			// m.stageDeatils.pipelineNode = &m.pipelineRun.Stages[m.focusedStageIdx]
-			// return nil
-
-			m.stageDetails.init()
+			m.userSelectedStage = true
+			m.activeBorder = borderStages
+			m.syncPaneFocus()
+			if m.stageDetails != nil {
+				m.stageDetails.init()
+			}
+			m.ensureFocusedStageVisible()
 			return m.getNode()
 		}
 	}
@@ -683,16 +1024,17 @@ func (m *Model) handleKeyPressMsgStageView(msg tea.KeyPressMsg) tea.Cmd {
 }
 
 // stageDetailsStale reports whether the details pane still shows a stage other
-// than the highlighted one: switching stages moves the box at once, but the
-// new stage's details arrive asynchronously.
+// than the highlighted one: switching stages moves the highlight at once, but
+// the new stage's details arrive asynchronously.
 func (m *Model) stageDetailsStale() bool {
 	if m.stageDetails == nil || m.stageDetails.pipelineNode == nil {
 		return false
 	}
-	if m.focusedStageIdx < 0 || m.focusedStageIdx >= len(m.pipelineRun.Stages) {
+	stage, ok := m.focusedNavStage()
+	if !ok {
 		return false
 	}
-	return m.stageDetails.pipelineNode.ID != m.pipelineRun.Stages[m.focusedStageIdx].ID
+	return m.stageDetails.pipelineNode.ID != stage.ID
 }
 
 // handleKeyPressMsgStaleDetails withholds keys from a details pane that still
@@ -702,8 +1044,12 @@ func (m *Model) handleKeyPressMsgStaleDetails(msg tea.KeyPressMsg) tea.Cmd {
 	if !key.Matches(msg, m.keyMap.OpenStepLog) {
 		return nil
 	}
+	stage, ok := m.focusedNavStage()
+	if !ok {
+		return nil
+	}
 	notice := util.CmdHandler(util.FooterNotiMsg{
-		Message: fmt.Sprintf("Loading %s stage…", m.pipelineRun.Stages[m.focusedStageIdx].Name),
+		Message: fmt.Sprintf("Loading %s stage…", stage.Name),
 	})
 	if m.cancelNodeRequest != nil {
 		return notice
@@ -712,10 +1058,86 @@ func (m *Model) handleKeyPressMsgStaleDetails(msg tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *Model) handleKeyPressMsgDetailsView(msg tea.KeyPressMsg) tea.Cmd {
-	stageDeatils, cmd := m.stageDetails.Update(msg)
-	if stageDeatils, ok := stageDeatils.(*StageDetails); ok {
-		m.stageDetails = stageDeatils
+	if m.stageDetails == nil {
+		return nil
 	}
+	stageDetails, cmd := m.stageDetails.Update(msg)
+	if sd, ok := stageDetails.(*StageDetails); ok {
+		m.stageDetails = sd
+	}
+	return cmd
+}
+
+func (m *Model) handleFetchNodeLog(msg FetchNodeLogMsg) tea.Cmd {
+	if m.logPane == nil {
+		return nil
+	}
+	m.focusPane = focusLog
+	m.activeBorder = borderLog
+	m.syncPaneFocus()
+	m.syncPaneSizes()
+
+	// When in full-log mode and the step is indexed, jump straight to it;
+	// otherwise show the step's scoped log.
+	if m.logPane.mode == logModeFull && m.logPane.fullLogIndex != nil {
+		if line, ok := m.logPane.fullLogIndex.JumpLineForStep(msg.NodeID); ok && m.logPane.viewer != nil && m.logPane.viewer.TotalLines() > 0 {
+			return tea.Batch(m.logPane.viewer.JumpToLine(line), m.UpdateFooter())
+		}
+	}
+
+	m.logPane.mode = logModeStep
+	stageName := ""
+	if m.stageDetails != nil {
+		stageName = m.stageDetails.stageName()
+	}
+	if step, ok := m.findStepByID(msg.NodeID); ok {
+		if m.logPane.fullLogPath != "" && m.logPane.fullLogIndex != nil && m.logPane.fullLogIndex.HasNodeTags {
+			if len(m.logPane.fullLogIndex.StepRanges[step.ID]) > 0 {
+				return tea.Batch(m.extractScopedView(logModeStep, step.ID), m.UpdateFooter())
+			}
+		}
+		force := m.logPane.loadErr != nil || m.logPane.nodeID != step.ID
+		return tea.Batch(m.loadStepLog(stageName, step, force), m.UpdateFooter())
+	}
+	return tea.Batch(m.loadStepLog(stageName, gojenkins.PipelineNode{ID: msg.NodeID}, true), m.UpdateFooter())
+}
+
+func (m *Model) selectedStep() (gojenkins.PipelineNode, bool) {
+	if m.stageDetails == nil {
+		return gojenkins.PipelineNode{}, false
+	}
+	return m.stageDetails.selectedStep()
+}
+
+func (m *Model) hasSelectedStep() bool {
+	_, ok := m.selectedStep()
+	return ok
+}
+
+func (m *Model) findStepByID(id string) (gojenkins.PipelineNode, bool) {
+	if m.stageDetails == nil || m.stageDetails.pipelineNode == nil {
+		return gojenkins.PipelineNode{}, false
+	}
+	for _, step := range m.stageDetails.pipelineNode.StageFlowNodes {
+		if step.ID == id {
+			return step, true
+		}
+	}
+	return gojenkins.PipelineNode{}, false
+}
+
+func (m *Model) syncPaneFocus() {
+	if m.stageDetails != nil {
+		m.stageDetails.isFocused = m.focusPane == focusBuild && m.activeBorder == borderSteps
+	}
+}
+
+func (m *Model) updateLogViewer(msg tea.Msg) tea.Cmd {
+	if m.logPane == nil || m.logPane.viewer == nil {
+		return nil
+	}
+	var cmd tea.Cmd
+	m.logPane.viewer, cmd = m.logPane.viewer.Update(msg)
 	return cmd
 }
 
@@ -859,26 +1281,44 @@ func (m *Model) handleBuildFetchMsg(msg BuildFetchedMsg) tea.Cmd {
 			log.Debug("build: request cancelled", "buildID", m.pipelineRun.ID)
 			return nil
 		}
+		if m.startInFullLog && m.logPane != nil && (m.logPane.viewer != nil || m.logPane.loading) {
+			// Full log mode can still show the console log even if pipeline metadata failed.
+			m.loading = false
+			return nil
+		}
 		return util.CmdHandler(LoadFailedMsg{Model: m, Generation: msg.Generation, Error: msg.Error, ErrorTitle: msg.ErrorTitle})
 	}
 
 	m.pipelineRun = msg.PipelineRun
+	m.pluginTree = msg.PluginTree
 	m.startedBy = msg.StartedBy
 	m.startedByDetails = msg.StartedByDetails
 	m.build = &msg.Build
 
 	m.loading = false
-	m.focusedStageIdx = 0
-	m.updateFocusedStageIdx()
+	m.userSelectedStage = false
+	if msg.StageGraph != nil {
+		m.stageGraph = *msg.StageGraph
+		m.syncNavStages(msg.FocusedStageID, msg.FocusedStageID != "")
+	} else {
+		m.rebuildStageGraph(msg.FocusedStageID, msg.FocusedStageID != "")
+	}
 
-	// Update's ensureAnimation keeps the loading clock running into a live
-	// build, so the page never has two chains.
 	var cmds []tea.Cmd
 	if msg.Node != nil {
 		m.mergeDownloadedNode(*msg.Node)
 		cmds = append(cmds, m.updateStageDetails(NodeDownloadedMsg{PipelineNode: *msg.Node}))
 	}
-	cmds = append(cmds, m.sendWindowSizeMsgToStageDetails())
+	m.syncPaneSizes()
+	m.ensureFocusedStageVisible()
+
+	if m.logPane != nil {
+		m.syncLogSelectionMetadata()
+		if cmd := m.loadFullLog(false); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+
 	if !m.isTerminal() {
 		cmds = append(cmds, m.watchExactRun())
 	}
@@ -888,14 +1328,14 @@ func (m *Model) handleBuildFetchMsg(msg BuildFetchedMsg) tea.Cmd {
 func (m *Model) getNode() tea.Cmd {
 	m.cancelNodeFetch()
 	m.nodeGeneration++
-	if len(m.pipelineRun.Stages) == 0 || m.focusedStageIdx >= len(m.pipelineRun.Stages) {
+	stage, ok := m.focusedNavStage()
+	if !ok || stage.ID == "" {
 		return nil
 	}
 	ctx, cancel := m.ctx.RequestContext()
 	m.cancelNodeRequest = cancel
 	generation := m.nodeGeneration
 	run := m.pipelineRun
-	stage := run.Stages[m.focusedStageIdx]
 	return func() tea.Msg {
 		defer cancel()
 		n, err := run.GetNode(ctx, stage.ID)
@@ -929,7 +1369,46 @@ func (m *Model) handleNodeDownloaded(msg NodeDownloadedMsg) tea.Cmd {
 		return util.CmdHandler(util.ErrorMsg{Error: msg.Error, Title: msg.ErrorTitle})
 	}
 	m.mergeDownloadedNode(msg.PipelineNode)
-	return tea.Batch(m.updateStageDetails(msg), m.sendWindowSizeMsgToStageDetails())
+	var cmds []tea.Cmd
+	if cmd := m.updateStageDetails(msg); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	m.syncPaneSizes()
+
+	// Sync the inline log pane with the newly loaded stage/step details.
+	if m.logPane != nil {
+		m.syncLogSelectionMetadata()
+		switch m.logPane.mode {
+		case logModeFull:
+			if cmd := m.jumpFullLogToCurrentSelection(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		case logModeStage:
+			if cmd := m.applyCurrentLogScope(false); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		case logModeStep:
+			if step, ok := m.selectedStep(); ok && step.ID != "" {
+				if m.logPane.nodeID != step.ID || (m.logPane.viewer == nil && !m.logPane.loading && !m.logPane.empty) {
+					if cmd := m.applyCurrentLogScope(false); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+				}
+			} else {
+				m.logPane.cancelInFlight()
+				m.logPane.loading = false
+				m.logPane.loadErr = nil
+				m.logPane.empty = true
+				m.logPane.stageName = msg.PipelineNode.Name
+				m.logPane.stepName = ""
+				m.logPane.nodeID = ""
+				if cmd := m.logPane.resetViewer(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+		}
+	}
+	return tea.Batch(cmds...)
 }
 
 // MatchesLoadFailure lets the shell reject a failure delivered after Back,
@@ -942,10 +1421,9 @@ func (m *Model) updateStageDetails(msg tea.Msg) tea.Cmd {
 	if m.stageDetails == nil {
 		return nil
 	}
-	var cmd tea.Cmd
 	stageDetails, cmd := m.stageDetails.Update(msg)
-	if stageDetails, ok := stageDetails.(*StageDetails); ok {
-		m.stageDetails = stageDetails
+	if sd, ok := stageDetails.(*StageDetails); ok {
+		m.stageDetails = sd
 	}
 	return cmd
 }
@@ -953,44 +1431,227 @@ func (m *Model) updateStageDetails(msg tea.Msg) tea.Cmd {
 func (m *Model) handleWindowSizeMsg(msg tea.WindowSizeMsg) tea.Cmd {
 	m.wWidth = msg.Width
 	m.wHeight = msg.Height
-	m.stageView.SetWidth(m.wWidth)
-	return m.sendWindowSizeMsgToStageDetails()
+	if m.stageView != nil {
+		m.stageView.SetWidth(m.timelineContentWidth())
+	}
+	m.syncPaneSizes()
+	return nil
 }
 
-func (m *Model) sendWindowSizeMsgToStageDetails() tea.Cmd {
-	return m.updateStageDetails(tea.WindowSizeMsg{
-		Width: m.wWidth, Height: m.availableStageDetailsHeight(),
-	})
+// bottomPaneWidths computes the responsive horizontal split for the Steps (left)
+// and Log (right) framed panels. Ultra-narrow terminals show only the active pane.
+func (m *Model) bottomPaneWidths() (stepsW, logW int) {
+	if m.logPane != nil && m.logPane.zoomed {
+		return 0, max(4, m.wWidth)
+	}
+	if m.wWidth < narrowSplitThreshold {
+		if m.focusPane == focusLog {
+			return 0, max(4, m.wWidth)
+		}
+		return max(4, m.wWidth), 0
+	}
+	if m.wWidth >= 80 {
+		stepsW = clampInt(m.wWidth*30/100, 26, 40)
+	} else {
+		stepsW = 22
+	}
+	logW = max(16, m.wWidth-stepsW)
+	stepsW = max(4, m.wWidth-logW)
+	return stepsW, logW
 }
 
-func (m *Model) availableStageDetailsHeight() int {
+func (m *Model) syncPaneSizes() {
+	if m.logPane != nil && m.logPane.zoomed {
+		m.logPane.setSize(m.wWidth, m.wHeight)
+		return
+	}
+	bottomH := m.availableBottomHeight()
+	stepsW, logW := m.bottomPaneWidths()
+	if m.stageDetails != nil && stepsW > 0 {
+		_ = m.updateStageDetails(tea.WindowSizeMsg{Width: stepsW, Height: bottomH})
+	}
+	if m.logPane != nil && logW > 0 {
+		m.logPane.setSize(logW, bottomH)
+	}
+}
+
+func (m *Model) availableBottomHeight() int {
 	m.updateStageViewLayout()
-	topHeight := lipgloss.Height(lipgloss.JoinHorizontal(
-		lipgloss.Center,
-		m.renderBuildInfo(m.spinnerModel.View()),
-		m.renderArtifacts(),
-	))
-	height := m.wHeight - topHeight - lipgloss.Height(m.stageView.View())
-	if height < 0 {
-		return 0
+	stagesPanelH := 0
+	if m.stageView != nil {
+		stagesPanelH = m.stageView.Height() + 2
+	}
+	height := m.wHeight - buildInfoPanelHeight - stagesPanelH
+	if height < 4 {
+		return 4
 	}
 	return height
 }
 
 func (m *Model) updateStageViewLayout() {
-	m.stageView.SetContent(m.renderBuildFlow())
-	m.stageView.Style = styles.GetTheme().S().SelectedBorder.
-		BorderTop(true).
-		BorderBottom(true).
-		BorderLeft(false).
-		BorderRight(false)
+	if m.stageView == nil {
+		return
+	}
+	flow := m.renderBuildFlow()
+	m.stageView.SetWidth(m.timelineContentWidth())
+	m.stageView.SetHeight(m.timelineViewportHeight(flow))
+	y := m.stageView.YOffset()
+	m.stageView.SetContent(flow)
+	m.stageView.SetYOffset(y)
+	m.stageView.Style = lipgloss.NewStyle()
 }
 
-// shouldAnimate covers the loading spinner and a running build. A paused or
-// finished build is static, and a page outside Init/CleanUp is not on
-// screen, so neither keeps the clock alive.
+func (m *Model) currentStageGraph() stagegraph.Graph {
+	if len(m.stageGraph.Nodes) > 0 {
+		return m.stageGraph
+	}
+	if len(m.pipelineRun.Stages) == 0 {
+		return stagegraph.Graph{Source: stagegraph.SourceWFAPI}
+	}
+	return stagegraph.FromWFAPI(m.pipelineRun)
+}
+
+func (m *Model) navigableStages() []stagegraph.StageNode {
+	if len(m.navStages) > 0 {
+		return m.navStages
+	}
+	if len(m.pipelineRun.Stages) == 0 {
+		return nil
+	}
+	return extractNavigableStages(stagegraph.Flatten(m.currentStageGraph()))
+}
+
+func (m *Model) focusedNavStage() (stagegraph.StageNode, bool) {
+	nav := m.navigableStages()
+	if m.focusedStageIdx < 0 || m.focusedStageIdx >= len(nav) {
+		return stagegraph.StageNode{}, false
+	}
+	return nav[m.focusedStageIdx], true
+}
+
+func (m *Model) focusedStageID() string {
+	if stage, ok := m.focusedNavStage(); ok {
+		return stage.ID
+	}
+	return ""
+}
+
+func (m *Model) rebuildStageGraph(preserveID string, forcePreserve bool) {
+	if m.pluginTree != nil {
+		m.stageGraph = stagegraph.FromPluginTree(m.pluginTree, m.pipelineRun)
+	} else {
+		m.stageGraph = stagegraph.FromWFAPI(m.pipelineRun)
+	}
+	m.syncNavStages(preserveID, forcePreserve)
+}
+
+func (m *Model) syncNavStages(preserveID string, forcePreserve bool) {
+	rows := stagegraph.Flatten(m.stageGraph)
+	m.navStages = extractNavigableStages(rows)
+	if len(m.navStages) == 0 {
+		m.focusedStageIdx = 0
+		return
+	}
+	if forcePreserve && preserveID != "" {
+		if idx := indexOfNavStage(m.navStages, preserveID); idx >= 0 {
+			m.focusedStageIdx = idx
+			return
+		}
+	}
+	if !m.userSelectedStage {
+		if focusIdx := stagegraph.InitialFocusIndex(rows); focusIdx >= 0 {
+			m.focusedStageIdx = focusIdx
+			return
+		}
+	}
+	if preserveID != "" {
+		if idx := indexOfNavStage(m.navStages, preserveID); idx >= 0 {
+			m.focusedStageIdx = idx
+			return
+		}
+	}
+	m.focusedStageIdx = clampInt(m.focusedStageIdx, 0, len(m.navStages)-1)
+}
+
+func extractNavigableStages(rows []stagegraph.TimelineRow) []stagegraph.StageNode {
+	var nav []stagegraph.StageNode
+	for i := range rows {
+		if rows[i].Navigable {
+			nav = append(nav, rows[i].Node)
+		}
+	}
+	return nav
+}
+
+func indexOfNavStage(stages []stagegraph.StageNode, id string) int {
+	for i := range stages {
+		if stages[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func (m *Model) refreshGraphTree() tea.Cmd {
+	if m.ctx == nil || m.ctx.Jenkins == nil || m.ctx.Jenkins.Requester == nil || len(m.pipelineRun.Stages) == 0 {
+		return nil
+	}
+	cache := m.ctx.GraphCapabilityCache()
+	serverKey := m.ctx.GraphServerKey()
+	if cache.Get(serverKey) == stagegraph.CapabilityUnavailable {
+		return nil
+	}
+	m.cancelGraphFetch()
+	ctx, cancel := m.ctx.RequestContext()
+	m.cancelGraphRequest = cancel
+	m.graphGeneration++
+	generation := m.graphGeneration
+	jenkins := m.ctx.Jenkins
+	run := m.pipelineRun
+	return func() tea.Msg {
+		defer cancel()
+		tree, ok, err := stagegraph.FetchTree(ctx, jenkins, cache, serverKey, run)
+		if !ok {
+			return GraphTreeFetchedMsg{model: m, Generation: generation, Error: err}
+		}
+		return GraphTreeFetchedMsg{model: m, Generation: generation, Tree: tree}
+	}
+}
+
+func (m *Model) cancelGraphFetch() {
+	if m.cancelGraphRequest != nil {
+		m.cancelGraphRequest()
+		m.cancelGraphRequest = nil
+	}
+}
+
+func (m *Model) handleGraphTreeFetched(msg GraphTreeFetchedMsg) tea.Cmd {
+	if msg.model != m || msg.Generation != m.graphGeneration {
+		return nil
+	}
+	m.cancelGraphFetch()
+	if msg.Error != nil || msg.Tree == nil {
+		return nil
+	}
+	preserveID := m.focusedStageID()
+	m.pluginTree = msg.Tree
+	m.rebuildStageGraph(preserveID, m.userSelectedStage)
+	m.ensureFocusedStageVisible()
+	m.syncPaneSizes()
+	return nil
+}
+
+// shouldAnimate covers the loading spinner, a running build, and an inline log
+// fetch. A paused or finished build with an idle/loaded log pane is static, and
+// a page outside Init/CleanUp is not on screen, so neither keeps the clock alive.
 func (m *Model) shouldAnimate() bool {
-	return m.entered && (m.loading || m.isRunning())
+	if !m.entered {
+		return false
+	}
+	if m.loading || m.isRunning() {
+		return true
+	}
+	return m.logPane != nil && m.logPane.isAnimating()
 }
 
 func (m *Model) ensureAnimation() tea.Cmd {
@@ -1005,7 +1666,7 @@ func (m *Model) handleAnimationFrame(msg animation.FrameMsg) tea.Cmd {
 		return nil
 	}
 	m.spinnerModel = animation.AdvanceSpinner(m.spinnerModel)
-	if m.loading {
+	if m.loading && (m.logPane == nil || !m.logPane.zoomed) {
 		return m.clock.Next()
 	}
 	m.pulseBar.Step()
@@ -1015,8 +1676,12 @@ func (m *Model) handleAnimationFrame(msg animation.FrameMsg) tea.Cmd {
 	return m.clock.Next()
 }
 
-// hasRunningStage reports whether a stage box shows the pulse bar.
+// hasRunningStage reports whether any stage in the timeline is actively
+// executing and animates its bar.
 func (m *Model) hasRunningStage() bool {
+	if len(m.stageGraph.Nodes) > 0 {
+		return m.stageGraph.HasRunningStage()
+	}
 	for _, stage := range m.pipelineRun.Stages {
 		if buildstatus.PipelineStatus(stage.Status).Activity(0) == buildstatus.ActivityRunning {
 			return true
@@ -1036,59 +1701,5 @@ func newSpinnerModel() spinner.Model {
 	)
 }
 
-func (m *Model) updateFocusedStageIdx() {
-	m.focusedStageIdx = focusedStageIndex(m.pipelineRun.Stages, m.focusedStageIdx)
-}
-
-func focusedStageIndex(stages []gojenkins.PipelineNode, current int) int {
-	for i, stage := range stages {
-		status := buildstatus.PipelineStatus(stage.Status)
-		if status.IsExecuting() || status.Activity(0) == buildstatus.ActivityPaused {
-			return i
-		}
-	}
-	return min(max(0, current), max(0, len(stages)-1))
-}
-
-func (m *Model) downloadFlowNodeLog(nodeID string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := m.ctx.RequestContext()
-		defer cancel()
-		nodeLog, err := m.pipelineRun.GetNodeLog(ctx, nodeID)
-		if err != nil {
-			return util.ErrorMsg{
-				Error: err,
-				Title: "Failed to get node log",
-			}
-		}
-
-		if nodeLog == nil || nodeLog.Text == "" {
-			return util.ErrorMsg{
-				Error: fmt.Errorf("log is empty"),
-				Title: "Failed to get node log",
-			}
-		}
-
-		// Create a private directory for flow node logs.
-		dir := filepath.Join(m.ctx.DataLogsDir, "flow_nodes", safePathComponent(m.pipelineRun.ID))
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return util.ErrorMsg{Error: err, Title: "Failed to create directory"}
-		}
-		if err := os.Chmod(dir, 0o700); err != nil {
-			return util.ErrorMsg{Error: err, Title: "Failed to secure directory"}
-		}
-
-		fileName := filepath.Join(dir, fmt.Sprintf("%s.log", safePathComponent(nodeID)))
-		if err := os.WriteFile(fileName, []byte(nodeLog.Text), 0o600); err != nil {
-			return util.ErrorMsg{Error: err, Title: "Failed to write log"}
-		}
-		if err := os.Chmod(fileName, 0o600); err != nil {
-			return util.ErrorMsg{Error: err, Title: "Failed to secure log"}
-		}
-
-		return FlowNodeLogFetched{
-			NodeID:   nodeID,
-			FileName: fileName,
-		}
-	}
-}
+// Ensure logviewer stays referenced for embedded help composition.
+var _ *logviewer.Model

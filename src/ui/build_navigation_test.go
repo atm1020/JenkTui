@@ -80,8 +80,8 @@ func TestOpenStoredLogNavigatesImmediatelyToLoadingPage(t *testing.T) {
 	// Enter the route but do not execute the download command.
 	_, _ = app.Update(nav)
 	current := app.router.CurrentView()
-	if current.ID() != "log:/job/demo/42" || !strings.Contains(current.View(), "Downloading Job Log #42") {
-		t.Fatalf("destination = %s, want loading log page", current.ID())
+	if current.ID() != "build:http://jenkins/job/demo/42" || !strings.Contains(current.View(), "Fetching full console log #42") {
+		t.Fatalf("destination = %s, view = %q; want unified Build page fetching full console log #42", current.ID(), current.View())
 	}
 }
 

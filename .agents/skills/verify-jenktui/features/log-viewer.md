@@ -1,30 +1,42 @@
-# Console log viewer
+# Console log viewer (integrated Build & Log page)
 
-The log viewer shows a build's full console log. It loads the log in chunks,
-supports vim-style movement, and searches within the log, showing a match
-counter and next/previous navigation. It is built for logs with thousands of
-lines.
+The console log viewer is integrated directly into the Build page's `log` panel
+(replacing separate `joblog` and `flowlogviewer` screens). Opening a log via
+`L` from Job or My Runs lands straight in the Build page's zoomed full-console
+log view (`zoomed`), and pressing `z` (or `Esc`) unzooms into the full split
+Build + Stages + Steps + Log view. It loads logs in chunks, indexes stage/step/
+outside-of-stage lines from Jenkins' `/logText/progressiveHtml` (with
+`/consoleText` fallback), supports vim-style movement, and searches within the
+log with a match counter and next/previous navigation.
 
 ## Sub-features
 
-- `log-open`: `L` on a job page (stage pane's selected build) or a build page opens the
-  full log. The footer breadcrumb ends with `console`.
-- `log-status`: a status line `Loaded: a-b/N | Line: x | Scroll: y%`.
-- `log-move`: `j`/`k` move by line, `{` pages down, `}` pages up, `G` (or
-  `end`) jumps to the bottom, and `gg` (or `home`) jumps to the top.
-- `log-search`: `/` focuses `Search in logs...`. Type the query and press
-  Enter to show a `k/N` match counter. `n` and `p` go to the next and
-  previous match.
+- `log-open`: `L` on a job page (stage pane's selected build) or My Runs row
+  opens the unified Build page in zoomed full console log mode (`zoomed`,
+  footer breadcrumb ends with `console`). On the build page, `L` toggles Full
+  Console ↔ scoped step/stage log; `z` toggles zoomed tall-log mode (`Esc`
+  leaves zoom).
+- `log-scopes`: `1` full log (with instant stage/step jump), `2` stage log
+  (de-interleaved across parallel branches), `3` step log, `4` outside-of-stage
+  log (Pre-stage setup & Post-stage errors/stacktraces).
+- `log-status`: a status line `Loaded: a-b/N | Line: x | Scroll: y%` in the
+  embedded log toolbar.
+- `log-move`: when the log pane is focused (`Tab`/`ctrl+l`/zoomed), `j`/`k`
+  move by line, `{` pages down, `}` pages up, `G` (or `end`) jumps to the
+  bottom, and `gg` (or `home`) jumps to the top.
+- `log-search`: `/` focuses the inline search input (also works directly from
+  the steps pane). Type the query and press Enter to show a `k/N` match
+  counter (`Esc` cancels search). `n` and `p` go to the next and previous match.
 - `log-wrap`: `w` toggles line wrapping.
 - `log-visual`: `v` starts visual (line selection) mode, `y` yanks the
   selection to the clipboard, and `esc` exits.
 
 ## How to get to it (user POV)
 
-- Job page → `L` (the stage pane's selected build's log).
-- Build page → `L` (full log), or `ctrl+l` (the selected stage's step log;
-  this uses the selected flow step and leaves the build breadcrumb unchanged).
-- My Runs row → `L`.
+- Job page → `L` (unified Build page opened in zoomed full console log mode).
+- Build page → inline `log` pane (auto-loaded on open; `Tab`/`ctrl+l` focuses
+  it, `1`/`2`/`3`/`4` switch scopes, `L` toggles full/step, `z` zooms).
+- My Runs row → `L` (unified Build page opened in zoomed full console log mode).
 
 ## Driving it with jt
 
@@ -44,7 +56,7 @@ Steps:
   - Then run `$J keys RUN Enter && $J crumb RUN 'Backend.*log-heavy-job' && $J wait RUN '│ #[0-9]+ │'`.
     If you skip the build-box wait, the job page silently drops `L`.
 - **Open the log.**
-  - Run `$J keys RUN L && $J wait RUN 'Loaded:'`.
+  - Run `$J keys RUN L && $J crumb RUN 'log-heavy-job.*console' && $J wait RUN 'Loaded:' && $J wait RUN 'zoomed'`.
   - Expect `Loaded: a-b/N | Line: 1 | Scroll: 0%`, with the actual log's
     total. Buffer windows depend on viewport size, not fixed 250-line
     chunks. The footer matches `log-heavy-job.*console`.
@@ -59,7 +71,10 @@ Steps:
 - **Next and previous match.**
   - Run `$J type RUN nnn && $J wait RUN '4/500'`.
   - Then run `$J keys RUN p && $J wait RUN '3/500'`.
-  - Verified 2026-10-03 on build #33 (`dist/verify/proof-pages/`).
+- **Unzoom into the unified Build view.**
+  - Run `$J keys RUN z && $J wait RUN 'Build #' && $J wait RUN 'stages'`.
+  - Confirms `Job -> L` opens the integrated Build + Log page and preserves the
+    inline search/cursor state when switching between zoomed and split views.
 - **Proof.**
   - Run `$J snap RUN log-search-1` after the search.
   - Run `$J snap RUN log-search-4` after `nnn`.

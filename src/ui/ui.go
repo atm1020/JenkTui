@@ -16,6 +16,7 @@ import (
 	"github.com/atm1020/jenktui/src/jobref"
 	"github.com/atm1020/jenktui/src/notification"
 	"github.com/atm1020/jenktui/src/poll"
+	"github.com/atm1020/jenktui/src/stagegraph"
 	"github.com/atm1020/jenktui/src/store"
 	colortheme "github.com/atm1020/jenktui/src/theme"
 	"github.com/atm1020/jenktui/src/ui/buildaction"
@@ -25,13 +26,11 @@ import (
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/serverselector"
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/serversetup"
 	"github.com/atm1020/jenktui/src/ui/components/dialogs/themeselector"
-	"github.com/atm1020/jenktui/src/ui/components/flowlogviewer"
 	"github.com/atm1020/jenktui/src/ui/components/folder"
 	"github.com/atm1020/jenktui/src/ui/components/footer"
 	"github.com/atm1020/jenktui/src/ui/components/header"
 	"github.com/atm1020/jenktui/src/ui/components/home"
 	"github.com/atm1020/jenktui/src/ui/components/job"
-	"github.com/atm1020/jenktui/src/ui/components/joblog"
 	"github.com/atm1020/jenktui/src/ui/components/scriptview"
 	"github.com/atm1020/jenktui/src/ui/router"
 	"github.com/atm1020/jenktui/src/ui/styles"
@@ -174,14 +173,15 @@ func InitAppModel(subdirs *config.Subdirs) (*App, error) {
 	}
 
 	ctx := &context.ProgramContext{
-		Jenkins:      jenkins,
-		ServerConfig: serverCfg,
-		Servers:      servers,
-		Config:       cfg,
-		RunStore:     runStore,
-		ConfigDir:    configDir,
-		CacheDir:     cacheDir,
-		DataDir:      dataDir,
+		Jenkins:           jenkins,
+		ServerConfig:      serverCfg,
+		Servers:           servers,
+		Config:            cfg,
+		RunStore:          runStore,
+		GraphCapabilities: stagegraph.NewCapabilityCache(),
+		ConfigDir:         configDir,
+		CacheDir:          cacheDir,
+		DataDir:           dataDir,
 
 		// Data subdirectories
 		DataLogsDir:      subdirs.DataLogsDir,
@@ -417,8 +417,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleOpenBuild(msg)
 	case build.LoadFailedMsg:
 		return a, a.handleBuildLoadFailed(msg)
-	case build.OpenLogViewerMsg:
-		return a, a.navigateTo(flowlogviewer.NewModel(a.ctx, a.wWidth, a.wHeight, msg.FilePath))
 	case build.ReplayMsg:
 		return a, a.navigateTo(scriptview.NewModel(a.ctx, a.wWidth, a.wHeight, msg.Job, &msg.PipelineRun))
 	case pollDeliveryMsg:
@@ -563,9 +561,9 @@ func (a *App) handleOpenBuild(msg build.OpenBuildMsg) tea.Cmd {
 
 func (a *App) handleOpenLog(msg buildaction.OpenLogMsg) tea.Cmd {
 	if msg.PipelineRun != nil {
-		return a.navigateTo(joblog.NewModel(a.ctx, a.wWidth, a.wHeight, msg.PipelineRun))
+		return a.navigateTo(build.NewModelForLog(a.ctx, *msg.PipelineRun, a.wWidth, a.wHeight))
 	}
-	return a.navigateTo(joblog.NewModelFromURL(a.ctx, a.wWidth, a.wHeight, msg.JobURL, msg.BuildID))
+	return a.navigateTo(build.NewModelForLogFromURL(a.ctx, msg.JobURL, msg.BuildID, a.wWidth, a.wHeight))
 }
 
 func (a *App) handleBuildLoadFailed(msg build.LoadFailedMsg) tea.Cmd {
@@ -975,6 +973,7 @@ func (a *App) selectServer(server context.ServerConfig) tea.Cmd {
 	}
 
 	a.ctx.Jenkins, a.httpClient = jenkins, httpClient
+	a.ctx.ResetGraphCapabilities()
 	// Close the previous store's SQLite pool; otherwise every server switch
 	// leaks a *sql.DB (connections + management goroutines) for the process
 	// lifetime.
